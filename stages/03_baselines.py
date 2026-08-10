@@ -23,6 +23,7 @@ biology) and the within-COREAD association + GDSC2 replication table.
 
 INPUTS   data/processed/{X,y,signature_scores}_{GDSC1,GDSC2}.parquet
 OUTPUTS  data/processed/baseline_results.csv
+         data/processed/within_crc_association.csv
 """
 
 import sys
@@ -40,7 +41,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 import config as C
-from lib.io import load_screen
+from lib.io import exclude_haem, load_screen
 from lib.report import banner, report_metric, write_and_report
 from lib.signatures import background_score, load_alias_map, load_signatures, rank_matrix
 
@@ -90,6 +91,16 @@ def main():
                              r2=m["r2"], rmse=m["rmse"], pct_of_ceiling=m["pct_of_ceiling"]))
 
     add("B2 lineage only", target, cv_predict(lin, target, (C.LINEAGE_COL,)))
+
+    # Solid-only variant: the transcriptome model (stage 04 onward) is always
+    # fit on solid tumours only, so B2's pan-cancer number overstates the bar
+    # it has to clear -- blood cancers are a distinct, easy-to-call lineage
+    # signal that the real model never gets credit for excluding.
+    _, y_solid = exclude_haem(y)
+    lin_solid = y_solid[[C.LINEAGE_COL]].fillna("UNKNOWN")
+    target_solid = y_solid[C.TARGET].to_numpy()
+    add("B2b lineage only (solid tumours)", target_solid,
+        cv_predict(lin_solid, target_solid, (C.LINEAGE_COL,)))
 
     if "CellCycle" in scores.columns:
         add("B3 proliferation only", target, cv_predict(scores[["CellCycle"]], target))
@@ -149,14 +160,19 @@ def main():
     print(f"  {'feature':<12} {C.TRAIN + ' (n=' + str(int(crc_mask.sum())) + ')':>22}"
           f" {C.TEST + ' (n=' + str(int((y2[C.LINEAGE_COL] == C.CRC).sum())) + ')':>22}")
     crc2 = (y2[C.LINEAGE_COL] == C.CRC).to_numpy()
+    crc_rows = []
     for c in feats:
         r1, p1 = stats.pearsonr(scores.loc[crc_mask, c], y.loc[crc_mask, C.TARGET])
         r2_, p2 = stats.pearsonr(scores2.loc[crc2, c], y2.loc[crc2, C.TARGET])
         print(f"  {c:<12} r={r1:+.3f} p={p1:.3f}{'*' if p1 < .05 else ' '}"
               f"      r={r2_:+.3f} p={p2:.3f}{'*' if p2 < .05 else ' '}")
+        crc_rows.append(dict(feature=c, r_gdsc1=r1, p_gdsc1=p1, n_gdsc1=int(crc_mask.sum()),
+                              r_gdsc2=r2_, p_gdsc2=p2, n_gdsc2=int(crc2.sum())))
     print(f"\n  {len(feats)} features -> Bonferroni threshold p < {0.05 / len(feats):.4f}")
     print(f"  NOTE: {C.TEST} re-measures largely the SAME cell lines, so this tests")
     print(f"  robustness to experimental noise, not generalisation to new lines.")
+    write_and_report(pd.DataFrame(crc_rows), C.PROCESSED / "within_crc_association.csv",
+                      "within_crc_association.csv")
 
     banner("5. READ BEFORE MODELLING")
     b5 = [r for r in results if "PERMUTED" in r["baseline"]][0]
