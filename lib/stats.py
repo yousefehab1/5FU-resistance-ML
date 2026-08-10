@@ -103,37 +103,40 @@ def ci_from_repeats(values, lo=2.5, hi=97.5):
     return values.mean(), np.percentile(values, lo), np.percentile(values, hi)
 
 
-def compositional_null(observed_scores, time_hours, feature, n_genes, expr,
-                        n_draws=C.COMPOSITIONAL_NULL_DRAWS, seed=C.SEED):
+def compositional_null(observed_scores, time_hours, n_genes, ranks, rng,
+                        feature=None, n_draws=C.COMPOSITIONAL_NULL_DRAWS):
     """
-    Arm B compositional control: is `feature`'s correlation with time bigger
+    Arm B compositional control: is a feature's correlation with time bigger
     than what a random gene set of the same size gives, drawn from the same
     expression matrix and scored the same way as the real signature?
 
     `n_genes` is the real signature's matched gene-set size (from
     `lib.signatures.load_signatures`) -- the null must draw sets of the same
-    size, or the comparison is meaningless.
+    size, or the comparison is meaningless. `ranks` and `rng` are passed in
+    (computed/seeded ONCE by the caller, outside any per-feature loop) so
+    ranking isn't redone per feature and the random draws for different
+    features consume one continuous stream -- matching how the original
+    script ran this control across all features with a single rng.
 
-    Ported unchanged from `05_armB_induction.py` Section 5b, including the
-    200-draw Monte Carlo count -- see module docstring for why this one
-    stays Monte Carlo while the per-sample signature-scoring null does not.
+    Ported unchanged from the original's Arm B script, including the
+    200-draw Monte Carlo count and its specific empirical-p formula (deviation
+    from the null's OWN mean, not from zero) -- see module docstring for why
+    this stays Monte Carlo while the per-sample signature-scoring null does
+    not.
     """
-    from lib.signatures import background_score, rank_matrix
-
     observed_r, _ = stats.pearsonr(observed_scores, time_hours)
 
-    ranks = rank_matrix(expr)
-    rng = np.random.default_rng(seed)
-    genes = expr.columns.to_numpy()
+    from lib.signatures import background_score
+
+    genes = ranks.columns.to_numpy()
     null_rs = np.empty(n_draws)
     for i in range(n_draws):
         draw = rng.choice(genes, size=n_genes, replace=False)
         null_score = background_score(ranks, list(draw))
         null_rs[i] = stats.pearsonr(null_score, time_hours)[0]
 
-    z = (observed_r - null_rs.mean()) / null_rs.std(ddof=1)
-    p_empirical = (np.sum(np.abs(null_rs) >= np.abs(observed_r)) + 1) / (n_draws + 1)
+    z = (observed_r - null_rs.mean()) / null_rs.std()
+    p_empirical = (np.abs(null_rs - null_rs.mean()) >= abs(observed_r - null_rs.mean())).mean()
 
     return dict(feature=feature, observed_r=observed_r, null_mean=null_rs.mean(),
-                null_sd=null_rs.std(ddof=1), z=z, p_empirical=p_empirical,
-                n_draws=n_draws)
+                null_sd=null_rs.std(), z=z, p_empirical=p_empirical, n_draws=n_draws)
