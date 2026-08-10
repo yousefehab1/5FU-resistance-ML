@@ -123,6 +123,14 @@ COVARIATES_NUM = ["mutational_burden"]
 FU_DRUG_NAME = "5-Fluorouracil"
 MIN_DRUG_LINES = 300    # a drug must be screened on at least this many lines
 
+# 5-FU's own pyrimidine-metabolism pathway (activation/catabolism/salvage),
+# for the "does the canonical target actually predict response" check.
+# TYMS is 5-FU's textbook DNA-directed target (thymidylate synthase); the
+# rest are the activating/catabolising/salvage enzymes docs/14 checked
+# alongside it. This table existed only as a hand-typed doc table in the
+# original project -- no script ever computed it.
+PYRIMIDINE_PATHWAY_GENES = ["TYMS", "DPYD", "UPP1", "UCK2", "TK1", "ABCB6"]
+
 # ============================================================================
 # ARM B (HCT116 TIME-COURSE)
 # ============================================================================
