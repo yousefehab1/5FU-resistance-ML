@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 
 import config as C
+from lib.io import exclude_haem, load_screen
 from lib.report import banner, write_and_report
 from lib.signatures import load_alias_map, load_signatures
 from lib.stats import hypergeometric_enrichment
@@ -33,7 +34,14 @@ from lib.stats import hypergeometric_enrichment
 def main():
     banner("1. LOADING MODEL GENES AND SIGNATURES")
     genes = pd.read_csv(C.PROCESSED / "final_model_genes.csv")
-    universe = pd.read_parquet(C.PROCESSED / "X_GDSC1.parquet").columns
+
+    # The universe must be the gene set the model actually chose from --
+    # i.e. AFTER the missingness filter and haem exclusion stage 04 applies,
+    # not the raw unfiltered expression matrix. Getting this wrong changes
+    # every expected-overlap and p-value below.
+    X, y, _ = load_screen(C.TRAIN)
+    _, _, X = exclude_haem(y, X)
+    universe = X.columns
     sigs = load_signatures(universe, alias_map=load_alias_map())
 
     query = set(genes["gene"])
