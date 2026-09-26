@@ -1,2 +1,0 @@
-# Haematological TCGA lineage codes, excluded from the solid-tumour analyses (D18).
-haematological_tcga_codes: [LAML, ALL, DLBC, LCML, MM, CLL]

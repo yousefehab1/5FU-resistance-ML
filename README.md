@@ -1,48 +1,125 @@
-# Predicting 5-FU resistance from regenerative transcriptional state
+# 5FU-resistance-ML
 
-Youssef Elabd, 2026
+Predicting 5-FU chemotherapy resistance from baseline gene expression in
+the GDSC cell-line screens, and testing one candidate mechanism, the
+drug-tolerant persister (DTP) programme, from several independent angles:
+an HCT116 5-FU time-course, four other chemotherapies, five cohorts of
+FOLFOX-treated colorectal patients, and the GDSC DNA methylation data.
 
-**Question.** Do the drug-tolerant persister (DTP) and regenerative stem-cell programmes from my MSc work predict baseline 5-fluorouracil resistance across cancer cell lines, and does 5-FU treatment induce those same programmes?
+- [`docs/METHODS.md`](docs/METHODS.md): what was done and why.
+- [`docs/FINDINGS.md`](docs/FINDINGS.md): the numbers, each citing the file it comes from.
+- [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md): what those numbers cannot be stretched to claim.
 
-**Answer, in short.**
+**One rule holds throughout:** every reported number is written by a
+stage to a file in `data/processed/`, and everything downstream, the
+dashboard included, reads only from those files. Nothing is hand-typed.
 
-- Expression predicts 5-FU sensitivity at r = 0.43 across 786 solid-tumour lines (about 70% of the r ≈ 0.60 ceiling set by the two screens' own agreement). That rises to r = 0.47 among lines the assay can actually resolve.
-- A model that knew nothing about the signatures picked 413 genes, and those genes are 4.7x enriched for DTP_up (p = 1e-6).
-- The DTP programme is induced over a 48 h 5-FU time course in HCT116 (r = 0.82), beyond a compositional null.
-- The DTP to resistance link in colorectal lines weakens once MSI status is adjusted for (r 0.34 to 0.23, no longer significant at n = 43), so it is hypothesis-generating, not established.
-
-Full results: [`docs/RESULTS.md`](docs/RESULTS.md). What they cannot be stretched to claim: [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
-
-## Run it
+## Setup
 
 ```bash
 python3.12 -m venv .venv
-make setup        # pinned dependencies + the fivefu package
-make features     # once: raw expression -> modelling matrices (slow)
-make run          # every analysis, writes data/processed/
-make test         # behaviour tests + golden gate
-make dashboard    # Streamlit app
+make setup                # pip install -r requirements.txt (pinned)
 ```
 
-The input files and where to download them are listed in [`docs/METHODS.md`](docs/METHODS.md#data). The R steps (17a, 18a, 23a and the `export_*.R` helpers) need R with Bioconductor.
+The R preparation steps need R with the Bioconductor packages listed at
+the bottom of `requirements.txt`.
+
+## Running
+
+```bash
+make r-prep               # R steps 13, 15, 21: GEO download, ComBat, 450K probe filtering
+make run                  # every Python stage, in numeric order
+make test                 # library tests + golden gate
+make dashboard            # streamlit run app.py
+```
+
+`make r-prep` only needs rerunning when its inputs change; its outputs
+land in `data/processed/` like everything else. Stage 01 caches the 5.7 GB
+RNA-seq file as `data/processed/expression_tpm.parquet` on first run.
+Stage 11 (five drugs through repeated CV) is the slowest stage.
+
+| Stage | What it does |
+|---|---|
+| **5-FU model** | |
+| `01_build_modelling_table` | 5-FU rows from both screens + expression, as `X_/y_GDSC{1,2}.parquet` |
+| `02_score_signatures` | Rank-based signature scores for both screens |
+| `03_baselines` | Mean, lineage, proliferation and permuted-label baselines |
+| `04_final_model` | ElasticNet, 5×5 repeated CV, lineage de-confounding, CRC transfer |
+| `05_enrichment` | Hypergeometric enrichment of the model's genes per signature |
+| `06_calibration` | Affine recalibration to GDSC2 (a display fix) |
+| `07_mutation_covariates` | Driver mutations; DTP adjusted for MSI and TP53 |
+| `08_armB_induction` | HCT116 time-course: trend tests + compositional null |
+| `09_multidrug` | General chemosensitivity, drug similarity, TYMS/pathway check |
+| **Other drugs** | |
+| `10_multidrug_targets` | Targets and QC for oxaliplatin, SN-38, irinotecan, cisplatin |
+| `11_multidrug_models` | The stage 04 pipeline per drug, with gene enrichment |
+| `12_drug_specificity` | Is DTP specific to 5-FU? Gene overlap; ribosome-biogenesis test |
+| **Patients** | |
+| `13_clinical_prep.R` | Five FOLFOX GEO cohorts; ComBat; purity, CMS and MSI-like covariates |
+| `14_clinical_validation` | Logistic regression of response on each score |
+| **Epigenome** | |
+| `15_methylation_prep.R` | 450K probe masking and filtering |
+| `16_methylation_ingest` | Promoter and gene-body methylation matrices |
+| `17_mlh1_msi` | MSI adjustment redone with continuous MLH1 methylation |
+| `18_methylation_models` | Methylation-only and late-fusion models; DTP on methylation |
+| `19_tf_activity` | TF activity (decoupler, CollecTRI) vs DTP and response |
+| `20_regulatory_architecture` | Are DTP genes enhancer-rich in colon tumour chromatin? |
+| `21_methylation_context_prep.R` | Promoter probes split by CpG-island context |
+| `22_methylation_context` | DTP methylation vs response per CpG context |
+| **Output** | |
+| `23_build_dashboard_data` | Compact tables for `app.py`; runs last |
+
+Stages 10 to 22 also write a short markdown report each to
+`data/processed/reports/`.
+
+## Tests
+
+```bash
+make test
+```
+
+- `test_library.py`: unit tests for `lib/`, including a synthetic guard
+  that fold-internal lineage de-confounding cannot leak (on pure
+  lineage-encoded noise the CV must score near zero), hypergeometric
+  edge cases, partial correlation and the signature scoring null.
+- `test_score_cohort.py`: `lib.cohorts.score_cohort` reproduces the
+  time-course scores in both gene orientations.
+- `test_golden.py`: every result table frozen in `tests/golden/` must be
+  reproduced in `data/processed/` to within 1e-9. Skipped when the pipeline has not
+  been run. After an intentional change, `make golden-update` re-freezes it.
 
 ## Layout
 
-| Path | Contents |
+```
+config.py            every constant: paths, hyperparameters, cohorts, drug list
+lib/
+  io.py              loading, missingness filter, haem exclusion, mutation flags
+  signatures.py      alias resolution, rank scoring, the analytic null
+  modeling.py        pipeline, fold-internal de-confounded CV, CRC transfer
+  stats.py           enrichment, partial correlation, bootstrap, compositional null
+  cohorts.py         scoring external cohorts (clinical, time-course)
+  report.py          compute -> persist -> print helpers
+stages/              the pipeline, 01 to 23, run in numeric order
+scripts/one_time/    R exports of annotation (HGNC aliases, 450K manifest, TSS)
+tests/               library tests, cohort-scoring test, golden gate
+app.py               Streamlit dashboard over stage 23's output
+docs/                METHODS, FINDINGS, LIMITATIONS
+```
+
+`data/raw/`, `data/processed/`, `models/` and `figures/` are gitignored.
+
+## Data
+
+All inputs go in `data/raw/` (about 12 GB) and are never modified.
+
+| File(s) | Source |
 |---|---|
-| `scripts/` | The pipeline. Numbered scripts, run in the order the `Makefile` lists. |
-| `src/fivefu/` | Shared library: loading, signature scoring, modelling, statistics. |
-| `config/` | Every analysis parameter (seed, CV folds, ElasticNet settings, drugs, signatures). |
-| `data/raw/` | Downloaded inputs. Never written to. Not in git. |
-| `data/processed/` | Everything the pipeline writes, including per-script markdown reports in `reports/`. Safe to delete and regenerate. Not in git. |
-| `tests/` | `test_library.py` (behaviour) and `test_golden.py` (every result table must match `tests/golden/`). |
-| `app.py` | Dashboard. Reads only `data/processed/dashboard/`. |
-| `docs/` | `METHODS.md`, `RESULTS.md`, `LIMITATIONS.md`. |
-
-## Rules the code keeps
-
-1. Feature selection and scaling happen inside each cross-validation fold. A permuted-label run accompanies every model and must give r ≈ 0.
-2. Lineage de-confounding estimates tissue means on training rows only.
-3. Results are quoted against the measurement ceiling and next to trivial baselines (lineage, proliferation), not against r = 1.
-4. `data/raw/` is never modified; symbol repairs happen at load time.
-5. Reproducing `tests/golden/` exactly needs `requirements.lock.txt`.
+| `GDSC{1,2}_fitted_dose_response_24Jul22.csv`, `screened_compounds_rel_8.4.csv`, `Cell_Lines_Details.xlsx` | GDSC release 8.4, https://www.cancerrxgene.org/downloads |
+| `rnaseq_all_20260323.csv`, `model_list_20260724.csv`, `mutations_summary_20260724.csv` | Cell Model Passports, https://cellmodelpassports.sanger.ac.uk/downloads |
+| `methylation/GSE68379_Matrix.processed.txt.gz` | GEO GSE68379 (GDSC 450K methylation) |
+| `methylation/humanmethylation450_manifest.csv` | `scripts/one_time/export_450k_manifest.R` |
+| `geo_clinical/` | GEO GSE28702, GSE19860, GSE69657, GSE72970, GSE104645 (fetched by stage 13) |
+| `atac/` | TCGA ATAC-seq (Corces et al. 2018), https://gdc.cancer.gov/about-data/publications/ATACseq-AWG; `gene_tss_hg38.csv` from `scripts/one_time/export_gene_tss_hg38.R` |
+| `hgnc_alias_map.csv` | `scripts/one_time/export_hgnc_aliases.R` (org.Hs.eg.db) |
+| `signatures/*.txt`, `sigs.csv` | Curated gene sets: DTP up/down, RSC, CBC, Fetal, MYC, CellCycle |
+| `Sup_Table_2_HCT116_5FU_timecourse_treatment.txt` | HCT116 5-FU time-course, raw counts, 0/6/24/48 h in triplicate |

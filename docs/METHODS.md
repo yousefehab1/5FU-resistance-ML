@@ -1,97 +1,253 @@
 # Methods
 
-How the pipeline works as it stands now. For the numbers see [RESULTS.md](RESULTS.md); for caveats see [LIMITATIONS.md](LIMITATIONS.md).
+This document is the method spec: what was done and why,
+one paragraph per decision. For the numbers that came out of it, see
+[FINDINGS.md](FINDINGS.md). For what the numbers can't be stretched to
+claim, see [LIMITATIONS.md](LIMITATIONS.md).
 
-## Data
+## Cohort
 
-All files go in `data/raw/` and are never modified.
+GDSC1 and GDSC2 are two independent dose-response screens run on
+overlapping sets of cell lines, at different times, sometimes with
+different assay protocols. Both are used: GDSC1 as the training screen
+(twice the dynamic range), GDSC2 as an external validation screen for the
+same drug on largely the same lines. Haematological lineages (leukaemias,
+lymphomas, myelomas; `config.HAEM`) are excluded from every modelling
+step: the DTP/regenerative programmes this project studies are defined in
+solid epithelial tumours, and blood cancers are both biologically
+different and easy for a model to identify by tissue-of-origin alone,
+which would inflate apparent performance for the wrong reason.
 
-| File(s) | Source |
-|---|---|
-| `GDSC1_fitted_dose_response_24Jul22.csv`, `GDSC2_fitted_dose_response_24Jul22.csv`, `screened_compounds_rel_8.4.csv`, `Cell_Lines_Details.xlsx` | GDSC release 8.4, https://ftp.sanger.ac.uk/pub/project/cancerrxgene/releases/current_release/ |
-| `rnaseq_all_20260323.csv`, `model_list_20260724.csv`, `mutations_summary_20260724.csv` | Cell Model Passports, https://cellmodelpassports.sanger.ac.uk/downloads |
-| `methylation/GSE68379_Matrix.processed.txt.gz` | GEO GSE68379 (GDSC 450K methylation) |
-| `methylation/humanmethylation450_manifest.csv` | Exported by `scripts/export_450k_manifest.R` |
-| `geo_clinical/` | GEO GSE28702, GSE19860, GSE69657, GSE72970, GSE104645 (fetched by `scripts/17a_clinical_covariates.R`) |
-| `atac/` | TCGA ATAC-seq (Corces et al. 2018), https://gdc.cancer.gov/about-data/publications/ATACseq-AWG; `gene_tss_hg38.csv` from `scripts/export_gene_tss_hg38.R` |
-| `hgnc_alias_map.csv` | Exported by `scripts/export_hgnc_aliases.R` (org.Hs.eg.db) |
-| `signatures/` (DTP_UP, DTP_Down, CBC, CellCycle), `sigs.csv` | Curated gene sets from the MSc project |
-| `Sup_Table_2_HCT116_5FU_timecourse_treatment.txt` | HCT116 5-FU time course, raw counts, 0/6/24/48 h in triplicate |
+## Target
 
-## Pipeline
+**AUC**, not LN_IC50. GDSC's IC50 is right-censored (many solid lines are
+never killed at screenable concentrations), which makes IC50 both
+noisier and harder to interpret. AUC degrades more gracefully under
+censoring. `config.CEILING_R = {"AUC": 0.604, "LN_IC50": 0.560}` records
+how well GDSC1 and GDSC2 agree with each other on the same lines for each
+target: the ceiling on what any model predicting one screen from
+baseline expression could achieve, since that agreement bounds the
+achievable correlation regardless of modelling quality.
 
-Run order is the `Makefile`. Every script writes to `data/processed/`.
+## Features
 
-| Script | What it does |
-|---|---|
-| **Targets and features** | |
-| `01_explore_drug_response` | Extracts 5-FU from both screens; measures the GDSC1 vs GDSC2 agreement that sets the ceiling (r ≈ 0.60). |
-| `02_build_modelling_table` | Streams the 5.7 GB expression file into `X_GDSC{1,2}.parquet` and joins targets into `y_GDSC{1,2}.parquet`. |
-| `03_baselines` | Scores the signatures and fits the five baselines: mean, lineage, proliferation, lineage + proliferation, permuted labels. |
-| **5-FU model** | |
-| `06_model` | ElasticNet, Ridge and random forest on the transcriptome; nested CV picks alpha = 0.02, l1_ratio = 0.5. |
-| `07_refined_model` | Restricts to solid tumours, adds MSI/TP53 covariates, compares DTP variants (up, down, bidirectional). |
-| `08_final_model` | Repeated 5x5 CV with CIs, lineage de-confounding, colorectal transfer, assay-resolution strata; saves the 413-gene model. |
-| `09_calibration_and_mutations` | Affine recalibration for the dashboard display; mutation features. Prints only. |
-| `10_multidrug` | Splits 5-FU response into general chemosensitivity and a 5-FU-specific residual. |
-| **Other drugs** | |
-| `12_multidrug_targets` | Targets and QC for oxaliplatin, SN-38, irinotecan, cisplatin. |
-| `13_multidrug_models` | The `08` pipeline per drug, with signature enrichment of each model's genes. |
-| `14_drug_specificity` | Is DTP specific to 5-FU? Cross-drug gene overlap; ribosome-biogenesis test. |
-| **Arm B and external cohorts** | |
-| `05_armB_induction` | Scores the time course; trend tests plus a random gene-set null for compositional shifts. |
-| `16_score_external` | Scores any external expression matrix with the same signatures (`fivefu.cohorts.score_cohort`). |
-| `17a_clinical_covariates.R`, `17_clinical_validation` | Five FOLFOX cohorts; logistic regression of response on each score, unadjusted and adjusted for purity, CMS, MSI and study. |
-| **Epigenome** | |
-| `18a_methylation_prep.R`, `18_methylation_ingest` | 450K beta/M values aggregated to promoter and gene-body matrices. |
-| `19_mlh1_msi` | Repeats the MSI adjustment with continuous MLH1 promoter methylation. |
-| `20_methylation_models` | Methylation-only and late-fusion models; DTP scored on methylation. |
-| `21_tf_activity` | TF activity (decoupler, CollecTRI) and its association with DTP and response. |
-| `22_regulatory_architecture` | Are DTP genes enhancer-rich in colon tumour chromatin? Matched-background permutations. |
-| `23a_methylation_context_prep.R`, `23_methylation_context` | DTP methylation vs response, split by CpG-island context. |
-| **Output** | |
-| `11_build_dashboard_data` | Compact tables for `app.py`. Runs last. |
+Baseline (pre-treatment) bulk RNA-seq, `rsem_tpm` from Cell Model
+Passports. That value is **already log2(TPM+1)**, confirmed empirically
+(values top out around 18, per-sample sums around 6×10⁴ rather than the
+~10⁶ raw TPM would give), so it is not re-logged. Genes missing in more than
+10% of lines are dropped (`config.MAX_GENE_MISSING`); the small remainder
+is median-filled, an unsupervised step applied identically to every fold
+so it cannot leak test information (`lib/io.py::load_screen`).
 
-## Core techniques
+## Model
 
-**Signature scoring** (`fivefu.signatures`). Genes are ranked within each sample; a signature's score is its mean percentile rank, z-scored against the exact null for random gene sets of the same size. DTP is scored as up minus down. Ranks make RNA-seq TPM and raw counts comparable without normalisation. Old symbols are resolved through the HGNC alias map at load.
+`SelectKBest(f_regression, k=1500) → StandardScaler → ElasticNet(alpha=0.02,
+l1_ratio=0.5)` (`lib/modeling.py::elasticnet_pipeline`), evaluated by 5×5
+repeated K-fold CV (`repeated_cv`): 5 folds, 5 repeats with different
+random splits, reporting the mean and 95% CI (2.5th/97.5th percentile)
+across the 5 per-repeat Pearson r values. `SelectKBest` lives **inside**
+the pipeline rather than as a pre-filtering step, so gene selection is
+refit on the training fold only every time; selecting by correlation
+with the full target before splitting would leak.
 
-**Model** (`fivefu.modeling`). `SelectKBest(k=1500) → StandardScaler → ElasticNet(alpha=0.02, l1_ratio=0.5)`, all inside the CV fold. Reported r is the mean over 5 repeats of 5-fold CV, with a 95% interval across repeats.
+## Lineage de-confounding
 
-**Lineage de-confounding.** Within each fold, tissue means of X and y (and the tissue SD of y) are estimated on training rows only and removed from both train and test. The target becomes "resistance relative to lines of the same tissue".
+Fold-internal only. Within each CV fold, lineage means (for both X and y)
+are estimated on the **training rows alone**, then subtracted from both
+train and test rows of that fold; y is also divided by the training
+lineage SD. Lineages present in a test fold but absent from that fold's
+training rows are dropped: their mean can't be estimated without seeing
+them. This is the most safety-critical piece of code in the project:
+computing lineage means over the **whole dataset** uses test-fold targets
+and reports a leaked r=0.279 for the de-confounded association, against
+r=0.182 for the fold-internal version. That gap is the size of the leak.
+`tests/test_library.py` has a synthetic regression guard against this
+failure mode: on data that is pure lineage-encoded noise (y is
+literally the lineage mean plus noise, X is independent random noise),
+the de-confounded CV must score near zero.
 
-**Statistics** (`fivefu.stats`). Bootstrap CIs on correlations, partial correlations by residualising on covariates, hypergeometric enrichment of selected genes against each signature.
+## CRC handling
 
-## Decisions
+Colorectal (COREAD) is the lineage 5-FU is actually used to treat
+clinically, but there are only 43–46 CRC lines in either screen, far too
+few to train a transcriptome-wide model on directly. Rather than either
+ignoring CRC or overfitting a CRC-only model, `transfer_to_crc` compares
+three approaches: (a) a small Ridge model on the four modelled signature
+scores, trained and cross-validated on CRC alone; (b) the pan-solid
+ElasticNet model, trained on every solid line **except** CRC and applied
+directly to CRC (transfer); (c) the CRC-only Ridge model with the
+transfer prediction added as one extra feature. Transfer consistently
+outperforms local training, the expected result given n≈43–46.
 
-| # | Decision | Reason |
-|---|---|---|
-| D1 | Pan-cancer is the main modelling arm; colorectal-only uses module scores | Only 43 to 46 colorectal lines |
-| D2 | Target is AUC, not LN_IC50 | 53 to 70% of IC50s are extrapolated past the top dose |
-| D3 | Train on GDSC1, check on GDSC2 | GDSC1 has twice the dynamic range for 5-FU |
-| D4 | Report r against the r ≈ 0.60 screen-agreement ceiling | Assay noise caps any model |
-| D5 | Lineage and proliferation baselines are mandatory | Lineage alone reaches 69% of the ceiling |
-| D7 | Do not log-transform `rsem_tpm` | It is already log2(TPM+1) |
-| D8 | Use Cell Model Passports' `duplicate` flag | Some lines were sequenced twice |
-| D10 | Describe GDSC2 as a re-measurement | 882 of its 943 lines are also in GDSC1 |
-| D11 | Cell Model Passports over DepMap | Shared `SANGER_MODEL_ID`, no name matching |
-| D12 | Signatures: DTP (bidirectional), RSC, CBC, Fetal; CellCycle as confounder | DTP overlaps RSC by only 3% |
-| D13 | Rank-based scoring, ssGSEA alongside | Per-sample scoring needed for Arm B and the dashboard |
-| D14 | Fetal and MYC not used as model features | Fetal r = 0.96 with RSC; MYC tracks CellCycle |
-| D16 | Repair corrupted symbols at load, never in `data/raw` | e.g. `VNN1.00` |
-| D17 | Exact analytic null, not Monte Carlo | 200 random draws reproduced at only r = 0.74 |
-| D18 | Solid tumours only | The signatures are epithelial programmes |
-| D19 | Treat MSI as a confounder of DTP | Associated with both AUC and DTP |
-| D21 | Report performance split by assay resolution | The model has no signal among lines at the AUC ceiling |
+## Signature scoring
 
-(D6, D9, D15 and D20 were minor or superseded; they remain in git history.)
+Every signature (DTP up/down, RSC, CBC, Fetal, MYC, CellCycle) is scored
+the same way, in one shared module (`lib/signatures.py`) used by both the
+cross-sectional GDSC arm and the HCT116 time-course arm, so the two arms
+can never silently drift onto different gene sets under the same name.
+Scoring is rank-based: each sample's genes are converted to within-sample
+percentile ranks (`rank_matrix`), then a signature's score is
+`(observed mean rank − population mean rank) / null SD`, where the null
+SD is computed **analytically** from the exact finite-population-
+correction formula for the mean of `n` values drawn without replacement
+from a population of `N` (`background_score`). This replaced an earlier
+Monte Carlo null (200 draws) that was found to be far too few: rescoring
+with a different seed gave r=0.74 for MYC against itself, meaning most of
+that score was sampling noise, not a real signal. The analytic null is
+exact, deterministic and seed-free by construction.
 
-## Corrections made along the way
+`DTP` is bidirectional: `DTP_up − DTP_down`, which cancels technical
+variation that shifts every gene the same way in a sample (library size,
+RNA quality, tumour purity). Genes are matched to each dataset's gene
+universe with light HGNC synonym resolution (`resolve_symbols`),
+necessary because the HCT116 time-course was annotated at an older HGNC
+vintage than current GDSC/signature symbols; unresolved, DTP_up recovery
+was 91% in GDSC vs 67% in the time-course, i.e. the two arms would silently
+score different gene sets under the same name. Alias resolution only
+accepts a synonym match when it is unambiguous (exactly one universe
+entry maps to that official symbol); ties are dropped, never guessed.
+Literal `"None"`/`"NA"`/etc. entries in the signature source files (failed
+upstream ID conversions written as text) are filtered and reported, not
+silently counted as genes.
 
-| Error | Effect | Fix |
-|---|---|---|
-| Monte Carlo null of 200 draws | MYC and CellCycle scores were mostly noise | Exact closed-form null |
-| Tissue means computed on all rows | De-confounded r reported as 0.279 | Means from training rows only: 0.182 |
-| Single train/test split for colorectal | Reported r = -0.06 | Repeated CV: 0.116 |
-| Symbol vintage mismatch | DTP recovered 91% of genes in GDSC, 67% in the time course | HGNC alias resolution |
-| Literal `None` entries in DTP lists | Recovery looked 9 points worse | Placeholders removed at load |
+**DTP and RSC/CBC/CellCycle are modelled features; Fetal and MYC are
+reference-only** (`config.MODELED_MODULES` vs `REFERENCE_MODULES`).
+Fetal shares 128 of RSC's 232 genes and correlates r=0.96 with it; MYC
+correlates r=0.83 with CellCycle, a proliferation proxy. Both are
+reported as sensitivity checks, never modelled as if independent.
+
+## Enrichment
+
+`lib/stats.py::hypergeometric_enrichment` tests whether the ~413
+non-zero-coefficient genes from the final de-confounded model's full fit
+are enriched for each curated signature, against the universe of every
+gene the model could have selected from (the missingness-filtered,
+haem-excluded expression matrix, not the raw unfiltered matrix and not
+just the query size). `p = scipy.stats.hypergeom.sf(k-1, N, K, n)`.
+
+## Assay-resolution stratification
+
+Roughly 29% of solid lines sit at AUC>0.95, the assay's practical
+ceiling: 5-FU barely affects them at any screenable concentration.
+Pooling those lines with genuinely responsive ones dilutes the apparent
+signal in both directions, so results are reported separately for
+responsive lines (AUC≤0.95) and ceiling lines (AUC>0.95).
+
+## Affine recalibration
+
+The GDSC1-trained model is systematically compressed and offset when
+applied to GDSC2, because the two screens have different AUC
+distributions. `y_cal = a·ŷ + b`, fit by `np.polyfit` on **half** of
+GDSC2 and evaluated on the other half (so the reported evaluation number
+is honest rather than fit-and-scored on the same rows). For the
+algebraically optimal a and b, R² becomes exactly r²; an affine
+transform cannot change r. This is a **display fix** (so a shown
+predicted AUC isn't systematically ~0.07 too low), not a modelling
+improvement, and it requires labelled data from the target screen, which
+a genuinely new, unlabelled dataset would not have.
+
+## MSI and TP53 covariates
+
+Partial correlation (`lib/stats.py::partial_corr`, regressing both
+DTP and AUC on the covariate then correlating the residuals) tests
+whether DTP's association with resistance survives adjustment for
+microsatellite instability (MSI) and, separately, TP53 mutation status.
+This is a genuine confound test, not a feature the model itself uses;
+MSI/TP53 are not inputs to the ElasticNet model.
+
+## Multidrug residualization
+
+GDSC1 screened 352 other drugs on at least 300 of the same solid lines. "General
+chemosensitivity" is defined as the mean z-scored AUC across those other
+drugs per cell line; 5-FU AUC is residualized on it via ordinary least
+squares (`lib/stats.py::residualize`) to isolate the 5-FU-**specific**
+component, and the transcriptome model is re-evaluated on that residual.
+This is the same logic as lineage de-confounding, applied to a different
+nuisance axis: measure the generic signal, remove it, see what survives.
+
+## Arm B (HCT116 time-course)
+
+A second, independent line of evidence: does 5-FU **induce** these
+programmes over time within one cell line (HCT116), rather than merely
+correlating with resistance across lines? Scored with the identical
+`lib/signatures.py` pipeline as the cross-sectional arm. The
+compositional control (`lib/stats.py::compositional_null`) tests whether
+each feature's correlation with time exceeds what a random gene set of
+the same size gives, drawn from the same expression matrix. This is necessary
+because rank-based scores are compositional: if cell-cycle genes collapse
+under treatment, every other gene's rank rises mechanically, which alone
+could manufacture an apparent "induction" signal for any feature. This
+asks a coarser question than `background_score`'s analytic null (does a
+*time-trend* exceed a random-gene-set trend?), for which 200 Monte Carlo
+draws are adequate, unlike scoring a single sample. It stays Monte Carlo,
+with an empirical p measured as deviation from the null's own mean and
+one continuous `rng` stream shared across all features.
+
+## Other drugs (stages 10 to 12)
+
+Oxaliplatin, SN-38, irinotecan and cisplatin (`config.DRUGS`) get the same
+target construction as 5-FU. Stage 10 picks one screen per drug from its
+QC (`multidrug_qc.csv`): coverage, assay-ceiling fraction and GDSC1/GDSC2
+agreement where both exist. A drug below `config.MIN_N_STOP` lines stops
+the run rather than being fitted. Stage 11 runs the stage 04 pipeline,
+with the same hyperparameters and no retuning, on each drug, and tests
+each model's selected genes for signature enrichment. Stage 12 works on
+GDSC2 (the one screen with all five drugs) and asks three things: does
+DTP track each drug after removing general chemosensitivity (partial
+correlation, with and without MSI), do the drugs' models pick overlapping
+genes (`hypergeometric_overlap` against the shared universe), and does
+5-FU track oxaliplatin more than cisplatin (`bootstrap_r_difference`,
+2,000 draws, the two arms resampled independently).
+
+## Clinical cohorts (stages 13 and 14)
+
+Five GEO series of colorectal patients treated with FOLFOX. Stage 13 (R)
+downloads them, keeps the FOLFOX arm of each, and checks every regimen
+against the series' own GEO summary rather than its column labels. The
+four Affymetrix studies (GPL570: GSE28702, GSE19860, GSE69657, GSE72970)
+are ComBat-corrected together. The Agilent study (GSE104645, GPL6480) is
+two-colour log-ratio data, a different technology rather than a batch, so
+it is never pooled. Covariates: tumour purity (ESTIMATE), CMS subtype
+(CMScaller), and an MSI-like call from CMScaller's MSI template, since no
+series reports a molecular MSI test. Stage 14 scores every sample with
+`lib.cohorts.score_cohort` (the same rank-based scoring as the cell
+lines) and fits a logistic regression of response on each z-scored
+score, unadjusted and adjusted for purity, CMS, MSI and study.
+
+## Methylation (stages 15 to 18, 21, 22)
+
+The GDSC 450K array (GEO GSE68379, processed beta values). Stage 15 (R)
+masks betas with detection p ≥ 0.01 and removes cross-reactive, SNP and
+sex-chromosome probes; stage 16 aggregates probes to promoter
+(TSS1500/TSS200) and gene-body matrices, as beta and M values. Stage 17
+repeats the COREAD MSI adjustment with continuous MLH1 promoter
+methylation in place of the binary MSI call. Stage 18 fits the stage 04
+pipeline on methylation alone and as a late fusion (average of the
+expression and methylation predictions), and scores DTP on promoter
+M values with the unchanged `lib.signatures` scoring. Stages 21 (R) and
+22 split promoter methylation by CpG-island relation (island, N/S shore,
+N/S shelf, open sea) plus an enhancer stratum, and rerun the
+methylation-DTP test in each, BH-corrected per screen. At least
+`config.OVERLAP_MIN` lines must have both expression and methylation.
+
+## TF activity and chromatin (stages 19 and 20)
+
+Stage 19 infers transcription-factor activity from expression with
+decoupler (ULM on the CollecTRI regulon), then models response from TF
+activity and tests TFs against DTP and AUC within COREAD. Ten TFs were
+pre-specified (TEAD1 to 4, MYC, E2F1, TP53, SOX9, HNF4A, CDX2) and are
+reported at raw p; every other TF is exploratory and BH-corrected as its
+own pool. If CollecTRI cannot be downloaded the stage stops rather than
+silently switching regulon. Stage 20 counts TCGA COAD ATAC-seq peaks
+(distal and promoter) assigned to each gene and compares each signature
+with 2,000 random gene sets matched on expression and gene length (5 × 5
+bins).
+
+## Data provenance
+
+`data/raw/` holds the raw inputs (~12GB, not in git; see the README
+for sources). It is treated as read-only source of truth by every stage; nothing in
+`stages/` ever writes there. `data/processed/` is entirely regenerated by
+running the stages in numeric order (`make run`), after the R
+preparation steps (`make r-prep`); nothing in it is
+committed to git.

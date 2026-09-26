@@ -1,15 +1,16 @@
-"""Behaviour of the fivefu library on small synthetic data."""
+"""Behaviour of lib/ on small synthetic data. Needs no project data."""
 
 import numpy as np
 import pandas as pd
 import pytest
 from scipy import stats as sps
+from sklearn.linear_model import Ridge
 
-from fivefu import config
-from fivefu.cohorts import detect_gene_axis
-from fivefu.modeling import permuted_label_check, repeated_cv
-from fivefu.signatures import background_score, rank_matrix
-from fivefu.stats import bootstrap_r, hypergeometric_overlap, partial_corr, residualize
+from lib.cohorts import detect_gene_axis
+from lib.modeling import cv_repeats, permuted_label_check
+from lib.signatures import background_score, rank_matrix
+from lib.stats import (bootstrap_r, hypergeometric_enrichment, hypergeometric_overlap,
+                       partial_corr, residualize)
 
 
 @pytest.fixture(scope="module")
@@ -35,18 +36,33 @@ def confounded():
 # ---- modelling --------------------------------------------------------------
 
 def test_cv_finds_a_real_signal(dataset):
-    rs = repeated_cv(*dataset, deconfound=False)
-    assert rs.mean() > 0.5
+    assert cv_repeats(*dataset, deconfound=False).mean() > 0.5
 
 
 def test_cv_is_deterministic(dataset):
-    assert (repeated_cv(*dataset, deconfound=True) == repeated_cv(*dataset, deconfound=True)).all()
+    assert (cv_repeats(*dataset, deconfound=True) == cv_repeats(*dataset, deconfound=True)).all()
 
 
 def test_deconfounding_removes_the_lineage_signal(dataset):
-    raw = repeated_cv(*dataset, deconfound=False).mean()
-    deconf = repeated_cv(*dataset, deconfound=True).mean()
-    assert deconf < raw
+    assert cv_repeats(*dataset, deconfound=True).mean() < cv_repeats(*dataset, deconfound=False).mean()
+
+
+def test_deconfounded_cv_near_zero_on_pure_lineage_noise():
+    """y depends ONLY on lineage and X is pure noise, so any de-confounded CV
+    correlation is a leak: lineage statistics computed over train+test rather
+    than the training fold only (the historical r=0.279 vs 0.182 bug)."""
+    rng = np.random.default_rng(1)
+    lineage = np.repeat([f"L{i}" for i in range(6)], 25)
+    y = np.repeat(rng.normal(0, 2.0, 6), 25) + rng.normal(0, 0.5, len(lineage))
+    X = rng.normal(size=(len(lineage), 20))
+    rs = cv_repeats(X, y, lineage, deconfound=True, model_factory=lambda: Ridge(alpha=1.0))
+    assert abs(rs.mean()) < 0.2
+
+
+def test_deconfound_requires_lineage(dataset):
+    X, y, _ = dataset
+    with pytest.raises(ValueError):
+        cv_repeats(X, y, lineage=None, deconfound=True)
 
 
 def test_shuffled_labels_find_nothing(dataset):
@@ -92,6 +108,16 @@ def test_enrichment_edge_cases_give_nan():
     assert np.isnan(hypergeometric_overlap(0, 10, 0, 4000)[2])
 
 
+def test_enrichment_on_gene_sets_matches_known_case():
+    universe = [f"g{i}" for i in range(100)]
+    signature = set(universe[:20])
+    query = set(universe[:8]) | set(universe[50:54]) | {"not_in_universe"}
+    r = hypergeometric_enrichment(query, signature, universe, name="toy")
+    assert (r["observed_overlap"], r["signature_size"], r["query_size"]) == (8, 20, 12)
+    assert r["fold_enrichment"] == pytest.approx(8 / (12 * 20 / 100))
+    assert r["p_value"] == pytest.approx(sps.hypergeom.sf(7, 100, 20, 12))
+
+
 # ---- signatures and cohorts -------------------------------------------------
 
 def test_signature_scores_high_where_its_genes_are_high():
@@ -106,8 +132,7 @@ def test_signature_scores_high_where_its_genes_are_high():
 def test_gene_axis_is_detected_and_transposed():
     alias = {"MLH1": "MLH1", "TP53": "TP53"}
     genes_on_rows = pd.DataFrame(np.ones((3, 2)), index=["MLH1", "TP53", "KRAS"], columns=["s1", "s2"])
-    out = detect_gene_axis(genes_on_rows, alias, verbose=False)
-    assert "MLH1" in out.columns
+    assert "MLH1" in detect_gene_axis(genes_on_rows, alias, verbose=False).columns
 
 
 def test_ensembl_ids_are_rejected():
@@ -115,10 +140,3 @@ def test_ensembl_ids_are_rejected():
     ensembl = pd.DataFrame(np.ones((2, 2)), index=["ENSG00000076242", "ENSG00000141510"], columns=["s1", "s2"])
     with pytest.raises(SystemExit):
         detect_gene_axis(ensembl, alias, verbose=False)
-
-
-# ---- config -----------------------------------------------------------------
-
-def test_missing_config_key_raises():
-    with pytest.raises(config.ConfigError):
-        config.require({"a": {}}, "a", "b", source="test")
