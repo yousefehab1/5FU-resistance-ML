@@ -1,0 +1,51 @@
+drug,screen,model,n,r_mean,r_lo,r_hi,r_sd
+5-Fluorouracil,GDSC1,transcriptome -> raw AUC,786,0.4270876918530361,0.4066507002238433,0.4553760406289274,0.01864395252101403
+5-Fluorouracil,GDSC1,"transcriptome -> AUC, lineage de-confounded",760,0.18244507816615654,0.09200725914941876,0.25038273726473737,0.05728513142483689
+5-Fluorouracil,GDSC1,B1 mean only,786,0.0,,,
+5-Fluorouracil,GDSC1,B2 lineage only,786,0.2957561647764001,,,
+5-Fluorouracil,GDSC1,B3 proliferation only,786,-0.07559018341543869,,,
+5-Fluorouracil,GDSC1,B4 lineage + proliferation,786,0.2818060301170576,,,
+5-Fluorouracil,GDSC1,B5 PERMUTED LABELS,786,-0.03444436413394048,,,
+5-Fluorouracil,GDSC1,"R1 CHECK: de-confounded model, permuted target",760,0.06259274601042417,,,
+5-Fluorouracil,GDSC1,stratified: responsive (AUC<=0.95),557,0.4669934828115926,,,
+5-Fluorouracil,GDSC1,stratified: ceiling (AUC>0.95),229,-0.09125530113123567,,,
+Oxaliplatin,GDSC2,transcriptome -> raw AUC,828,0.537165259226637,0.5234965571211174,0.5491665791614238,0.009133199897921947
+Oxaliplatin,GDSC2,"transcriptome -> AUC, lineage de-confounded",796,0.22521464122208065,0.21217857910682392,0.24078122700276522,0.010090723916488584
+Oxaliplatin,GDSC2,B1 mean only,828,0.0,,,
+Oxaliplatin,GDSC2,B2 lineage only,828,0.2957339231162559,,,
+Oxaliplatin,GDSC2,B3 proliferation only,828,-0.0011650042075263805,,,
+Oxaliplatin,GDSC2,B4 lineage + proliferation,828,0.2952655282018526,,,
+Oxaliplatin,GDSC2,B5 PERMUTED LABELS,828,-0.08660102656252489,,,
+Oxaliplatin,GDSC2,"R1 CHECK: de-confounded model, permuted target",796,0.011846338989477106,,,
+Oxaliplatin,GDSC2,stratified: responsive (AUC<=0.95),394,0.5135782561132887,,,
+Oxaliplatin,GDSC2,stratified: ceiling (AUC>0.95),434,0.05144063594886564,,,
+SN-38,GDSC2,transcriptome -> raw AUC,819,0.2541198863358705,0.2356981372690285,0.2710505521720795,0.012992006098155469
+SN-38,GDSC2,"transcriptome -> AUC, lineage de-confounded",788,0.12326802108062025,0.11353169311359627,0.13382704860823452,0.0077408157433958465
+SN-38,GDSC2,B1 mean only,819,0.0,,,
+SN-38,GDSC2,B2 lineage only,819,0.28265537658571277,,,
+SN-38,GDSC2,B3 proliferation only,819,0.06273239957767779,,,
+SN-38,GDSC2,B4 lineage + proliferation,819,0.2930999431922684,,,
+SN-38,GDSC2,B5 PERMUTED LABELS,819,0.015764047998782046,,,
+SN-38,GDSC2,"R1 CHECK: de-confounded model, permuted target",788,0.025787302390993617,,,
+SN-38,GDSC2,stratified: responsive (AUC<=0.95),563,0.21209539959930943,,,
+SN-38,GDSC2,stratified: ceiling (AUC>0.95),256,-0.014295199478738491,,,
+Irinotecan,GDSC2,transcriptome -> raw AUC,826,0.6313956010227852,0.5195755292724701,0.6703023516918937,0.06355021302791995
+Irinotecan,GDSC2,"transcriptome -> AUC, lineage de-confounded",794,0.32721271467550916,0.20171286883284634,0.3991153000735034,0.08136812820206014
+Irinotecan,GDSC2,B1 mean only,826,0.0,,,
+Irinotecan,GDSC2,B2 lineage only,826,0.3990234522590632,,,
+Irinotecan,GDSC2,B3 proliferation only,826,0.04508256494422888,,,
+Irinotecan,GDSC2,B4 lineage + proliferation,826,0.3970128962459467,,,
+Irinotecan,GDSC2,B5 PERMUTED LABELS,826,0.01613265202125073,,,
+Irinotecan,GDSC2,"R1 CHECK: de-confounded model, permuted target",794,0.006360438248918268,,,
+Irinotecan,GDSC2,stratified: responsive (AUC<=0.95),631,0.6536107671604571,,,
+Irinotecan,GDSC2,stratified: ceiling (AUC>0.95),195,0.07090628637792379,,,
+Cisplatin,GDSC1,transcriptome -> raw AUC,772,0.37430870287996043,0.3603219170913605,0.38559518364581274,0.008963210896587104
+Cisplatin,GDSC1,"transcriptome -> AUC, lineage de-confounded",747,0.22186483533621382,0.20708080853502434,0.24129936328148793,0.013345323544991608
+Cisplatin,GDSC1,B1 mean only,772,0.0,,,
+Cisplatin,GDSC1,B2 lineage only,772,0.27217841279950306,,,
+Cisplatin,GDSC1,B3 proliferation only,772,-0.05463602605822983,,,
+Cisplatin,GDSC1,B4 lineage + proliferation,772,0.27311754781928976,,,
+Cisplatin,GDSC1,B5 PERMUTED LABELS,772,0.06081055512619106,,,
+Cisplatin,GDSC1,"R1 CHECK: de-confounded model, permuted target",747,-0.0005126798817753034,,,
+Cisplatin,GDSC1,stratified: responsive (AUC<=0.95),616,0.2737864018621854,,,
+Cisplatin,GDSC1,stratified: ceiling (AUC>0.95),156,0.1942941726713093,,,

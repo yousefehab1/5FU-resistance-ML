@@ -1,0 +1,3 @@
+# Oxaliplatin and irinotecan are only in GDSC2. Order sets CSV row order.
+primary: 5-Fluorouracil
+focal: [5-Fluorouracil, Oxaliplatin, SN-38, Irinotecan, Cisplatin]

@@ -1,0 +1,15 @@
+metric,value
+n_probes_total,485512.0
+n_probes_cross_reactive_removed,38941.0
+n_probes_snp_overlap_removed,104206.0
+n_probes_sex_chr_removed,11648.0
+n_probes_retained,345994.0
+n_genes_promoter,18864.0
+n_genes_body,16475.0
+n_methylation_samples_mapped,1003.0
+n_expression_cohort_solid,781.0
+n_overlap_solid_expr_and_methylation,759.0
+probe_missingness_median,0.0
+probe_missingness_max,0.71486
+sample_missingness_median,0.0009
+sample_missingness_max,0.01207

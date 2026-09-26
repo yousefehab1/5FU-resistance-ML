@@ -1,0 +1,31 @@
+# Analysis parameters, read through fivefu.config. A missing key raises.
+# alpha and l1_ratio were chosen by the nested CV in scripts/06_model.py, which
+# still derives them itself; this file only shares them with the other scripts.
+
+seed: 0
+
+feature_selection:
+  k_genes: 1500               # genes kept by SelectKBest, inside each fold
+
+cross_validation:
+  n_repeats: 5
+  n_folds: 5
+
+elasticnet:
+  alpha: 0.02
+  l1_ratio: 0.5
+  max_iter: 3000
+
+filters:
+  max_gene_missing: 0.10      # drop genes missing in more than 10% of lines
+  min_lineage_n: 10           # smallest tissue group used for de-confounding
+  min_drug_lines: 300         # drugs screened on at least this many lines
+
+thresholds:
+  ceiling_auc: 0.95           # AUC above this is at the assay ceiling (D21)
+  ceiling_r:                  # GDSC1 vs GDSC2 agreement: the most any model can score (D4)
+    AUC: 0.604
+    LN_IC50: 0.560
+  min_n_task: 300             # minimum lines for a drug target to be modelled
+  min_n_stop: 30              # below this, stop and report rather than fit
+  overlap_min: 300            # minimum methylation/expression sample overlap

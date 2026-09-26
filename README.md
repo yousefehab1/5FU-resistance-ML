@@ -1,115 +1,48 @@
-# 5FU-resistance-ML-v2
+# Predicting 5-FU resistance from regenerative transcriptional state
 
-Predicting 5-FU chemotherapy resistance from baseline gene expression
-(GDSC1/GDSC2 cell-line screens), with a second, independent line of
-evidence from an HCT116 5-FU time-course. This is a clean reimplementation
-of [`5FU-resistance-ML`](../5FU-resistance-ML), reproducing only its
-**final, validated methodology** — not the exploratory history that got
-there. The original is left untouched as the historical archive; see its
-`docs/` for the decision-by-decision narrative of how the method arrived
-at this point.
+Youssef Elabd, 2026
 
-Read [`docs/METHODS.md`](docs/METHODS.md) for what was done and why,
-[`docs/FINDINGS.md`](docs/FINDINGS.md) for the headline numbers (each
-citing the exact file it comes from), and
-[`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) for what those numbers
-cannot be stretched to claim.
+**Question.** Do the drug-tolerant persister (DTP) and regenerative stem-cell programmes from my MSc work predict baseline 5-fluorouracil resistance across cancer cell lines, and does 5-FU treatment induce those same programmes?
 
-## Why this rebuild exists
+**Answer, in short.**
 
-The original project's biggest correctness risk wasn't a modelling bug —
-it was that several headline numbers (a DTP-signature enrichment test, an
-MSI-adjusted association, a drug-similarity result) existed only as
-console prints or hand-typed literals in its dashboard-building script,
-disconnected from any code that computed them. This rebuild's structural
-rule: **every reported number is written by a stage script to a file in
-`data/processed/`, and everything downstream — including the dashboard —
-reads only from those files.** Nothing is hand-typed twice.
+- Expression predicts 5-FU sensitivity at r = 0.43 across 786 solid-tumour lines (about 70% of the r ≈ 0.60 ceiling set by the two screens' own agreement). That rises to r = 0.47 among lines the assay can actually resolve.
+- A model that knew nothing about the signatures picked 413 genes, and those genes are 4.7x enriched for DTP_up (p = 1e-6).
+- The DTP programme is induced over a 48 h 5-FU time course in HCT116 (r = 0.82), beyond a compositional null.
+- The DTP to resistance link in colorectal lines weakens once MSI status is adjusted for (r 0.34 to 0.23, no longer significant at n = 43), so it is hypothesis-generating, not established.
 
-## Setup
+Full results: [`docs/RESULTS.md`](docs/RESULTS.md). What they cannot be stretched to claim: [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
+
+## Run it
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+python3.12 -m venv .venv
+make setup        # pinned dependencies + the fivefu package
+make features     # once: raw expression -> modelling matrices (slow)
+make run          # every analysis, writes data/processed/
+make test         # behaviour tests + golden gate
+make dashboard    # Streamlit app
 ```
 
-`data/raw/` (~12GB, dominated by a 5.7GB RNA-seq file) is a copy of the
-original project's raw inputs and is **not** in git — see
-[Data](#data) below.
-
-## Running the pipeline
-
-Stages run in order; each reads only from `data/raw/` and the outputs of
-earlier stages, and writes to `data/processed/`:
-
-```bash
-python stages/01_build_modelling_table.py    # GDSC1/2 5-FU rows + expression -> X/y parquets
-python stages/02_score_signatures.py         # signature scoring, both screens
-python stages/03_baselines.py                # B1-B5 baselines, leakage tripwire
-python stages/04_final_model.py              # the model: CV, de-confounding, CRC transfer
-python stages/05_enrichment.py               # hypergeometric enrichment of model genes
-python stages/06_calibration.py              # affine recalibration (display fix)
-python stages/07_mutation_covariates.py      # driver panel, MSI/TP53 confound tests
-python stages/08_armB_induction.py           # HCT116 time-course induction + compositional control
-python stages/09_multidrug.py                # drug-similarity, gene-target, DTP-specificity checks
-python stages/10_build_dashboard_data.py     # reads stages 01-09's outputs, zero hardcoded numbers
-streamlit run app.py
-```
-
-Stage 01 caches the streamed 5.7GB RNA-seq file to
-`data/processed/expression_tpm.parquet` on first run (delete it to force
-a rebuild). Everything else is fast.
-
-## Tests
-
-```bash
-pytest tests/
-```
-
-- `test_modeling_leak.py` — synthetic regression guard on the
-  fold-internal lineage de-confounding in `lib/modeling.py::repeated_cv`,
-  the project's own historically-caught leak bug (global de-confounding
-  leaked test-fold information and reported a bogus r=0.279; the
-  fold-internal fix reports r=0.182).
-- `test_enrichment.py` — deterministic unit tests for
-  `lib/stats.py::hypergeometric_enrichment` against hand-constructed toy
-  universes with known answers.
-- `test_golden.py` — regression tests against this project's own
-  checked-in reference numbers (raw r≈0.427, de-confounded r≈0.182,
-  DTP_up enrichment ≈4.7×). Skipped automatically if `data/processed/`
-  hasn't been populated yet.
+The input files and where to download them are listed in [`docs/METHODS.md`](docs/METHODS.md#data). The R steps (17a, 18a, 23a and the `export_*.R` helpers) need R with Bioconductor.
 
 ## Layout
 
-```
-config.py           single source of every constant (paths, hyperparameters,
-                     cohort definitions, the MODELED vs REFERENCE module split)
-lib/
-  io.py              data loading, expression caching, mutation flags
-  signatures.py      alias resolution, signature scoring, the analytic null
-  modeling.py        the model pipeline, fold-internal de-confounded CV, CRC transfer
-  stats.py           hypergeometric enrichment, compositional null, partial correlation
-  report.py          banner/report_metric/write_and_report ("compute -> persist -> print")
-stages/              the 10-stage pipeline, run in numeric order (see above)
-tests/               synthetic leak test, enrichment unit tests, golden-file checks
-app.py               Streamlit dashboard over stage 10's output
-docs/                METHODS.md, FINDINGS.md, LIMITATIONS.md
-data/raw/            copied source data (gitignored)
-data/processed/       stage outputs (gitignored, regenerated by the pipeline)
-models/               fitted model artefacts (gitignored, regenerated)
-scripts/one_time/     export_hgnc_aliases.R -- rarely-run annotation refresh,
-                       not part of the numbered pipeline
-```
+| Path | Contents |
+|---|---|
+| `scripts/` | The pipeline. Numbered scripts, run in the order the `Makefile` lists. |
+| `src/fivefu/` | Shared library: loading, signature scoring, modelling, statistics. |
+| `config/` | Every analysis parameter (seed, CV folds, ElasticNet settings, drugs, signatures). |
+| `data/raw/` | Downloaded inputs. Never written to. Not in git. |
+| `data/processed/` | Everything the pipeline writes, including per-script markdown reports in `reports/`. Safe to delete and regenerate. Not in git. |
+| `tests/` | `test_library.py` (behaviour) and `test_golden.py` (every result table must match `tests/golden/`). |
+| `app.py` | Dashboard. Reads only `data/processed/dashboard/`. |
+| `docs/` | `METHODS.md`, `RESULTS.md`, `LIMITATIONS.md`. |
 
-## Data
+## Rules the code keeps
 
-`data/raw/` is copied (not symlinked) from the original `5FU-resistance-ML`
-project so this repo is fully self-contained:
-
-```bash
-rsync -a "../5FU-resistance-ML/data/raw/" "data/raw/"
-```
-
-It is treated as read-only source of truth — no stage script ever writes
-to it. `data/processed/` and `models/` are entirely regenerated by the
-pipeline and are not committed to git.
+1. Feature selection and scaling happen inside each cross-validation fold. A permuted-label run accompanies every model and must give r ≈ 0.
+2. Lineage de-confounding estimates tissue means on training rows only.
+3. Results are quoted against the measurement ceiling and next to trivial baselines (lineage, proliferation), not against r = 1.
+4. `data/raw/` is never modified; symbol repairs happen at load time.
+5. Reproducing `tests/golden/` exactly needs `requirements.lock.txt`.

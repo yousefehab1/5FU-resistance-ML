@@ -1,0 +1,5 @@
+# modelled: used as model features. reference: scored and displayed only.
+# all: display order for the dashboard. Order sets column order.
+modelled: [DTP, RSC, CBC, CellCycle]
+reference: [Fetal, MYC]
+all: [DTP, RSC, CBC, Fetal, MYC, CellCycle]
