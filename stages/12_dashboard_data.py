@@ -1,7 +1,4 @@
 """
-stages/23_build_dashboard_data.py
-==================================
-
 Precompute a compact dataset for the Streamlit dashboard (`app.py`).
 
 STRUCTURAL RULE: this script reads EXCLUSIVELY from files earlier stages
@@ -15,7 +12,7 @@ The one piece of real computation here is out-of-fold PREDICTIONS for the
 "Predict" tab's scatter plot -- these are per-line numbers no upstream
 stage had reason to persist, computed with the exact same model
 (`lib.modeling.elasticnet_pipeline`) and then affine-recalibrated using
-the a/b this project already fit and persisted in stage 06 (NOT refit here).
+the a/b this project already fit and persisted in stages/02_fu_model.py (NOT refit here).
 
 INPUTS   data/processed/{X,y,signature_scores}_{GDSC1,GDSC2}.parquet
          data/processed/baseline_results.csv, final_model_results.csv,
@@ -37,11 +34,9 @@ import numpy as np
 import pandas as pd
 
 import config as C
-from lib.io import exclude_haem, load_mutation_flags, load_screen
+from lib.io import exclude_haem, load_expression, load_mutation_flags, load_screen
 from lib.modeling import oof_predictions
 from lib.report import banner, write_and_report
-
-DASH = C.PROCESSED / "dashboard"
 
 
 def _row(df, key_col, key_val):
@@ -55,18 +50,19 @@ def _row(df, key_col, key_val):
 
 
 def main():
-    DASH.mkdir(parents=True, exist_ok=True)
+    C.DASHBOARD_DIR.mkdir(parents=True, exist_ok=True)
 
     banner("1. CELL LINE TABLE")
     X1, y1, s1 = load_screen(C.TRAIN, with_signatures=True)
-    X2, y2 = load_screen(C.TEST, with_signatures=False)
-    genes = sorted(set(X1.columns) & set(X2.columns))
+    X2_cols = load_expression(C.TEST, impute=False).columns
+    y2 = pd.read_parquet(C.PROCESSED / f"y_{C.TEST}.parquet")
+    genes = sorted(set(X1.columns) & set(X2_cols))
 
     keep, y1s, X1s, s1s = exclude_haem(y1, X1[genes], s1)
     ts = y1s[C.TARGET].to_numpy()
 
     # Out-of-fold predictions for display -- same model, same genes as
-    # stage 06's calibration fit, so applying stage 06's a/b to them is a
+    # the stage 02 calibration fit, so applying its a/b to them is a
     # like-for-like recalibration rather than a mismatched one.
     oof = oof_predictions(X1s, ts)
     print(f"  out-of-fold predictions for {len(ts):,} solid lines "
@@ -76,7 +72,7 @@ def main():
     cal_row = _row(cal, "stage", "calibrated_heldout")
     a, b = cal_row["a"], cal_row["b"]
     predicted = a * oof + b
-    print(f"  calibrated with stage 06's a={a:.3f}, b={b:.3f} "
+    print(f"  calibrated with the persisted a={a:.3f}, b={b:.3f} "
           f"(held-out-half GDSC2 fit, not refit here)")
 
     tp53_flags = load_mutation_flags(["TP53"], model_ids=y1s.index)
@@ -96,16 +92,16 @@ def main():
     for m in C.ALL_MODULES:
         if m in s1s.columns:
             tab[m] = s1s[m].values
-    write_and_report(tab, DASH / "cell_lines.csv", "cell_lines.csv")
+    write_and_report(tab, C.DASHBOARD_DIR / "cell_lines.csv", "cell_lines.csv")
 
     banner("2. TIME-COURSE")
     tc_path = C.PROCESSED / "timecourse_scores.csv"
     if tc_path.exists():
         tc = pd.read_csv(tc_path)
         cols = ["sample", "timepoint_h"] + [m for m in C.ALL_MODULES if m in tc.columns]
-        write_and_report(tc[cols], DASH / "timecourse.csv", "timecourse.csv")
+        write_and_report(tc[cols], C.DASHBOARD_DIR / "timecourse.csv", "timecourse.csv")
     else:
-        print(f"  !! {tc_path.name} not found -- run stage 08 first. Tab will be hidden.")
+        print(f"  !! {tc_path.name} not found -- run stages/04_armB_induction.py first. Tab will be hidden.")
 
     banner("3. RESULTS SUMMARY")
     baseline = pd.read_csv(C.PROCESSED / "baseline_results.csv")
@@ -149,7 +145,7 @@ def main():
          "must be ~0"),
     ]
     write_and_report(pd.DataFrame(rows, columns=["model", "r", "ci_lo", "ci_hi", "note"]),
-                      DASH / "results.csv", "results.csv")
+                      C.DASHBOARD_DIR / "results.csv", "results.csv")
 
     banner("4. THE DTP HYPOTHESIS, EVERY TEST RUN")
     crc_assoc = pd.read_csv(C.PROCESSED / "within_crc_association.csv")
@@ -187,10 +183,10 @@ def main():
          f"{dtp_enrich['p_value']:.1e}", "unsupervised rediscovery"),
     ]
     write_and_report(pd.DataFrame(findings, columns=["finding", "effect", "p", "note"]),
-                      DASH / "findings.csv", "findings.csv")
+                      C.DASHBOARD_DIR / "findings.csv", "findings.csv")
 
     banner("DONE")
-    print(f"  dashboard data -> {DASH}")
+    print(f"  dashboard data -> {C.DASHBOARD_DIR}")
     print("  now run:  streamlit run app.py")
 
 

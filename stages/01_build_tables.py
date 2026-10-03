@@ -1,18 +1,21 @@
 """
-stages/01_build_modelling_table.py
-===================================
+Builds the two tables every later stage reads.
 
-Finds 5-FU in GDSC1/GDSC2 and builds the feature/target table every
-downstream stage reads: X_{label}.parquet (expression) and y_{label}.parquet
-(AUC/LN_IC50 + cell-line metadata), for label in {GDSC1, GDSC2}.
-
+1. Finds 5-FU in GDSC1/GDSC2 and joins it to expression and cell-line
+   metadata: X_{label}.parquet (expression) and y_{label}.parquet
+   (AUC/LN_IC50 + metadata), for label in {GDSC1, GDSC2}.
+2. Scores every signature module (DTP, RSC, CBC, Fetal, MYC, CellCycle)
+   against both screens.
 
 INPUTS   data/raw/{GDSC1,GDSC2}_fitted_dose_response_24Jul22.csv
          data/raw/rnaseq_all_20260323.csv   (5.7GB, streamed -- see lib.io)
          data/raw/model_list_20260724.csv
+         data/raw/signatures/*.txt, data/raw/hgnc_alias_map.csv
 OUTPUTS  data/processed/X_{GDSC1,GDSC2}.parquet
          data/processed/y_{GDSC1,GDSC2}.parquet
          data/processed/expression_tpm.parquet   (cache; delete to rebuild)
+         data/processed/signature_scores_{GDSC1,GDSC2}.parquet
+         data/processed/signature_scores_ssgsea_{GDSC1,GDSC2}.parquet
 """
 
 import sys
@@ -25,8 +28,9 @@ import pandas as pd
 from scipy import stats
 
 import config as C
-from lib.io import load_expression_cached
+from lib.io import load_expression_cached, load_screen
 from lib.report import banner
+from lib.signatures import load_alias_map, load_signatures, score_all
 
 DRUG_SEARCH = "fluorouracil"
 
@@ -55,7 +59,7 @@ def report_gdsc_agreement(fu1, fu2):
           f"model result as a fraction of this, not of 1.0)")
 
 
-def main():
+def build_modelling_table():
     banner("1. LOADING GDSC1 / GDSC2 AND FINDING 5-FU")
     g1 = pd.read_csv(C.GDSC1_FILE, low_memory=False)
     g2 = pd.read_csv(C.GDSC2_FILE, low_memory=False)
@@ -105,6 +109,33 @@ def main():
         y.to_parquet(C.PROCESSED / f"y_{label}.parquet")
         print(f"    wrote X_{label}.parquet {X.shape}  y_{label}.parquet {y.shape}")
 
+
+def score_signatures():
+    alias_map = load_alias_map()
+    print(f"  HGNC alias map: {len(alias_map):,} entries")
+
+    for label in [C.TRAIN, C.TEST]:
+        banner(f"SCORING SIGNATURES -- {label}")
+        X, _ = load_screen(label, with_signatures=False)
+        print(f"  {label}: {X.shape[0]:,} lines x {X.shape[1]:,} genes")
+
+        sigs = load_signatures(X.columns, alias_map=alias_map)
+        rank_df, ss_df = score_all(X, sigs)
+
+        if {"RSC", "CBC"} <= set(rank_df.columns):
+            r_rc = rank_df["RSC"].corr(rank_df["CBC"])
+            print(f"\n  RSC vs CBC: r = {r_rc:+.3f}  "
+                  f"({'FAILS - should be negative' if r_rc > 0 else 'anti-correlated, control passes'})")
+
+        rank_df.to_parquet(C.PROCESSED / f"signature_scores_{label}.parquet")
+        ss_df.to_parquet(C.PROCESSED / f"signature_scores_ssgsea_{label}.parquet")
+        print(f"  wrote signature_scores_{label}.parquet {rank_df.shape}")
+        print(f"  wrote signature_scores_ssgsea_{label}.parquet {ss_df.shape}")
+
+
+def main():
+    build_modelling_table()
+    score_signatures()
     banner("DONE")
 
 

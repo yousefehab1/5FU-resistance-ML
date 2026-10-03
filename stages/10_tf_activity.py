@@ -6,8 +6,8 @@ with tests/golden/.
 
 Inputs:  data/processed/X_*.parquet, y_*.parquet, signature_scores_*.parquet
 Outputs: data/processed/tf_activity_{GDSC1,GDSC2}.parquet, tf_activity_results.csv,
-         tf_dtp_associations.csv, reports/19_tf_activity.md
-Run:     python stages/19_tf_activity.py [--allow-network-fallback]
+         tf_dtp_associations.csv, reports/tf_activity.md
+Run:     python stages/10_tf_activity.py [--allow-network-fallback]
 """
 
 from pathlib import Path
@@ -19,32 +19,20 @@ import pandas as pd
 import decoupler as dc
 from scipy import stats
 from scipy.stats import false_discovery_control
-from sklearn.model_selection import KFold
 
 warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config as C
-
-ROOT = C.PROJECT_ROOT
-PROC = ROOT / "data" / "processed"
-DOCS = ROOT / "data" / "processed" / "reports"  # generated reports
-
+from lib.io import solid_screen
+from lib.modeling import oof_predictions, permuted_label_check, repeated_cv
+from lib.report import banner, write_and_report, write_report
+from lib import signatures as S
+from lib.stats import partial_corr
 
 PRESPECIFIED_TFS = ["TEAD1", "TEAD2", "TEAD3", "TEAD4",
                     "MYC", "E2F1", "TP53", "SOX9", "HNF4A", "CDX2"]
 MIN_TARGETS = 10
-TARGET, CRC = "AUC", "COREAD"
-
-# Analysis parameters live in config.py; nothing here re-declares one.
-from config import (CEILING_AUC, SEED, N_FOLDS, MIN_LINEAGE_N,
-                    MODELED_MODULES as MODULES)
-from config import LINEAGE_COL as LINEAGE
-from lib.io import solid_screen
-from lib.modeling import elasticnet_pipeline, permuted_label_check, repeated_cv
-from lib.report import banner
-from lib import signatures as S
-from lib.stats import partial_corr
 
 
 def get_network():
@@ -104,15 +92,12 @@ def infer_tf_activity(X, net):
 
 
 def stratified_by_assay(X, t, name):
-    """Mirrors 04_final_model.py section 3b, applied to a given feature matrix."""
-    Xa = np.asarray(X)
-    p_all = np.full(len(t), np.nan)
-    for tr, te in KFold(N_FOLDS, shuffle=True, random_state=SEED).split(Xa):
-        p_all[te] = elasticnet_pipeline().fit(Xa[tr], t[tr]).predict(Xa[te])
+    """Mirrors 02_fu_model.py section 3b, applied to a given feature matrix."""
+    p_all = oof_predictions(X, t)
     rows = []
     for lab, msk in [("<= 0.90 (responsive)", t <= 0.90),
-                     (f"0.90 - {CEILING_AUC}", (t > 0.90) & (t <= CEILING_AUC)),
-                     (f"> {CEILING_AUC} (assay ceiling)", t > CEILING_AUC)]:
+                     (f"0.90 - {C.CEILING_AUC}", (t > 0.90) & (t <= C.CEILING_AUC)),
+                     (f"> {C.CEILING_AUC} (assay ceiling)", t > C.CEILING_AUC)]:
         if msk.sum() > 10:
             rr = stats.pearsonr(t[msk], p_all[msk])[0]
             print(f"    {lab:<24} n={int(msk.sum()):>5} ({100*msk.mean():>5.1f}%)  r={rr:+.3f}")
@@ -123,10 +108,10 @@ def stratified_by_assay(X, t, name):
 
 def a1_repeated_cv(label, X_expr, X_tf, s, y):
     banner(f"A1. REPEATED CV -- {label}")
-    lin = y[LINEAGE].to_numpy()
-    t = y[TARGET].to_numpy()
+    lin = y[C.LINEAGE_COL].to_numpy()
+    t = y[C.TARGET].to_numpy()
     cnt = pd.Series(lin).value_counts()
-    big = set(cnt[cnt >= MIN_LINEAGE_N].index)
+    big = set(cnt[cnt >= C.MIN_LINEAGE_N].index)
     keep = np.isin(lin, list(big))
     print(f"  n={len(y)}  |  de-confounded arm uses {keep.sum()} lines in {len(big)} lineages\n")
 
@@ -134,8 +119,8 @@ def a1_repeated_cv(label, X_expr, X_tf, s, y):
     rows.append(repeated_cv(X_expr, t, lin, False, "baseline: transcriptome -> raw AUC"))
     rows.append(repeated_cv(X_expr[keep], t[keep], lin[keep], True,
                                "baseline: transcriptome -> AUC, de-confounded"))
-    rows.append(repeated_cv(s[MODULES], t, lin, False, "baseline: modules -> raw AUC"))
-    rows.append(repeated_cv(s[MODULES][keep], t[keep], lin[keep], True,
+    rows.append(repeated_cv(s[C.MODELED_MODULES], t, lin, False, "baseline: modules -> raw AUC"))
+    rows.append(repeated_cv(s[C.MODELED_MODULES][keep], t[keep], lin[keep], True,
                                "baseline: modules -> AUC, de-confounded"))
     rows.append(repeated_cv(X_tf, t, lin, False, "TF activity -> raw AUC"))
     rows.append(repeated_cv(X_tf[keep], t[keep], lin[keep], True,
@@ -153,13 +138,13 @@ def a1_repeated_cv(label, X_expr, X_tf, s, y):
 
 def a2_a3_dtp_associations(label, X_tf, s, y):
     banner(f"A2/A3. TF ACTIVITY vs DTP SCORE AND AUC, WITHIN COREAD -- {label}")
-    crc = (y[LINEAGE] == CRC).to_numpy()
+    crc = (y[C.LINEAGE_COL] == C.CRC).to_numpy()
     msi_ok = y["msi_status"].notna().to_numpy()
     m = crc & msi_ok
     print(f"  COREAD with MSI status: n={int(m.sum())}")
     Xc = X_tf[m]
     dtp = s[m]["DTP"].to_numpy()
-    auc = y[m][TARGET].to_numpy()
+    auc = y[m][C.TARGET].to_numpy()
     msi = (y[m]["msi_status"] == "MSI").astype(float).to_numpy()
 
     rows = []
@@ -235,40 +220,37 @@ def main():
     net, net_source = get_network()
 
     tf_rows, assoc_frames = [], []
-    pm = pd.read_parquet(PROC / "methylation_promoter_M.parquet")
+    pm = pd.read_parquet(C.PROCESSED / "methylation_promoter_M.parquet")
 
-    for label in ["GDSC1", "GDSC2"]:
+    for label in [C.TRAIN, C.TEST]:
         banner(f"LOAD + INFER TF ACTIVITY -- {label}")
         X, y, s = solid_screen(label)
         print(f"  n={len(y)} solid lines, {X.shape[1]} genes")
         X_tf = infer_tf_activity(X, net)
-        X_tf.to_parquet(PROC / f"tf_activity_{label}.parquet")
+        X_tf.to_parquet(C.PROCESSED / f"tf_activity_{label}.parquet")
 
         tf_rows.extend(a1_repeated_cv(label, X, X_tf, s, y))
         assoc_frames.append(a2_a3_dtp_associations(label, X_tf, s, y))
         assoc_frames.append(a4_cross_layer(label, X_tf, pm, y, s))
 
     tf_df = pd.DataFrame(tf_rows)
-    tf_df.to_csv(PROC / "tf_activity_results.csv", index=False)
+    write_and_report(tf_df, C.PROCESSED / "tf_activity_results.csv")
 
     assoc_df = pd.concat([f for f in assoc_frames if len(f)], ignore_index=True)
     assoc_df = add_fdr(assoc_df)
-    assoc_df.to_csv(PROC / "tf_dtp_associations.csv", index=False)
+    write_and_report(assoc_df, C.PROCESSED / "tf_dtp_associations.csv")
 
     banner("WRITING DOC")
     write_doc(net_source, tf_df, assoc_df)
-    print(f"  -> {DOCS / '19_tf_activity.md'}")
 
     banner("DONE")
-    print(f"  -> {PROC / 'tf_activity_results.csv'}")
-    print(f"  -> {PROC / 'tf_dtp_associations.csv'}")
 
 
 def write_doc(net_source, tf_df, assoc_df):
     lines = []
     lines.append("# Transcription factor activity inference\n")
     lines.append(
-        "Follow-up to `18_methylation_models.md`: promoter "
+        "Follow-up to `methylation_models.md`: promoter "
         "methylation of DTP genes tracks the expression DTP score but does not "
         "itself predict 5-FU response. This task tests whether the regulatory "
         "state is better read at the transcription-factor level than at the DNA "
@@ -297,9 +279,9 @@ def write_doc(net_source, tf_df, assoc_df):
         "-> ElasticNet`), repeated CV, raw and lineage-de-confounded arms, "
         "alongside the transcriptome and modules baselines, a permuted-label "
         "check, and a stratification by assay resolution -- all reusing "
-        "`04_final_model.py`'s `model()`/`repeated_cv()` unmodified.\n"
+        "`lib.modeling`'s `elasticnet_pipeline()`/`repeated_cv()` unmodified.\n"
     )
-    for label in ["GDSC1", "GDSC2"]:
+    for label in [C.TRAIN, C.TEST]:
         sub = tf_df[tf_df.screen == label]
         lines.append(f"\n**{label}** (n={int(sub.n.iloc[0])})\n\n")
         lines.append("| Model | r [95% CI] |\n|---|---|\n")
@@ -324,7 +306,7 @@ def write_doc(net_source, tf_df, assoc_df):
         "else is exploratory and Benjamini-Hochberg corrected as its own pool.\n\n"
     )
     a2 = assoc_df[assoc_df.question == "A2_COREAD"]
-    for label in ["GDSC1", "GDSC2"]:
+    for label in [C.TRAIN, C.TEST]:
         sub = a2[(a2.screen == label) & (a2.prespecified)]
         if not len(sub):
             continue
@@ -347,7 +329,7 @@ def write_doc(net_source, tf_df, assoc_df):
                          f"{cell('AUC_unadjusted')} | {cell('AUC_msi_adjusted')} |\n")
 
     lines.append("\n**Exploratory TFs** (all others surfaced by A2, BH-corrected):\n\n")
-    for label in ["GDSC1", "GDSC2"]:
+    for label in [C.TRAIN, C.TEST]:
         sub = a2[(a2.screen == label) & (~a2.prespecified) & (a2.metric == "AUC_unadjusted")]
         if not len(sub):
             continue
@@ -363,12 +345,12 @@ def write_doc(net_source, tf_df, assoc_df):
     lines.append(
         "Reported regardless of outcome. If the "
         "regulatory state found by A1-A3 is real, TF activity and the "
-        "methylation-derived DTP score from `18_methylation_models.py` (an independent readout, "
+        "methylation-derived DTP score from `08_methylation.py` (an independent readout, "
         "over the expression+methylation sample overlap, not restricted to "
         "COREAD) should agree.\n\n"
     )
     a4 = assoc_df[assoc_df.question == "A4_cross_layer"]
-    for label in ["GDSC1", "GDSC2"]:
+    for label in [C.TRAIN, C.TEST]:
         sub = a4[(a4.screen == label) & (a4.prespecified)]
         if not len(sub):
             lines.append(f"- {label}: A4 could not be computed (see run log).\n")
@@ -399,8 +381,7 @@ def write_doc(net_source, tf_df, assoc_df):
     lines.append("data/processed/tf_dtp_associations.csv\n")
     lines.append("```\n")
 
-    DOCS.mkdir(parents=True, exist_ok=True)
-    (DOCS / "19_tf_activity.md").write_text("".join(lines))
+    write_report("tf_activity.md", "".join(lines))
 
 
 if __name__ == "__main__":

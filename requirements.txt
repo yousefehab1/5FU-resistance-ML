@@ -6,8 +6,8 @@ numpy==2.5.1
 scipy==1.18.0
 scikit-learn==1.9.0
 statsmodels==0.14.6
-decoupler==2.2.0        # TF activity (stage 19)
-intervaltree==3.2.1     # peak-to-gene assignment (stage 20)
+decoupler==2.2.0        # TF activity (stage 10)
+intervaltree==3.2.1     # peak-to-gene assignment (stage 11)
 pyarrow==24.0.0         # parquet
 openpyxl==3.1.5         # xlsx inputs
 joblib==1.5.3
@@ -15,7 +15,7 @@ matplotlib==3.11.1
 streamlit==1.61.1
 pytest==9.1.1
 
-# R steps (stages 13, 15, 21 and scripts/one_time/) need R with data.table and
+# R steps (stages/prep/ and scripts/one_time/) need R with data.table and
 # the Bioconductor packages GEOquery, Biobase, sva, CMScaller, estimate, minfi,
 # maxprobes, IlluminaHumanMethylation450kanno.ilmn12.hg19, AnnotationDbi,
 # org.Hs.eg.db, GenomicFeatures, GenomicRanges, TxDb.Hsapiens.UCSC.hg38.knownGene.

@@ -183,15 +183,15 @@ draws are adequate, unlike scoring a single sample. It stays Monte Carlo,
 with an empirical p measured as deviation from the null's own mean and
 one continuous `rng` stream shared across all features.
 
-## Other drugs (stages 10 to 12)
+## Other drugs (stages 05 and 06)
 
 Oxaliplatin, SN-38, irinotecan and cisplatin (`config.DRUGS`) get the same
-target construction as 5-FU. Stage 10 picks one screen per drug from its
+target construction as 5-FU. Stage 05 picks one screen per drug from its
 QC (`multidrug_qc.csv`): coverage, assay-ceiling fraction and GDSC1/GDSC2
 agreement where both exist. A drug below `config.MIN_N_STOP` lines stops
-the run rather than being fitted. Stage 11 runs the stage 04 pipeline,
+the run rather than being fitted. It then runs the stage 02 pipeline,
 with the same hyperparameters and no retuning, on each drug, and tests
-each model's selected genes for signature enrichment. Stage 12 works on
+each model's selected genes for signature enrichment. Stage 06 works on
 GDSC2 (the one screen with all five drugs) and asks three things: does
 DTP track each drug after removing general chemosensitivity (partial
 correlation, with and without MSI), do the drugs' models pick overlapping
@@ -199,9 +199,9 @@ genes (`hypergeometric_overlap` against the shared universe), and does
 5-FU track oxaliplatin more than cisplatin (`bootstrap_r_difference`,
 2,000 draws, the two arms resampled independently).
 
-## Clinical cohorts (stages 13 and 14)
+## Clinical cohorts (clinical_prep.R and stage 07)
 
-Five GEO series of colorectal patients treated with FOLFOX. Stage 13 (R)
+Five GEO series of colorectal patients treated with FOLFOX. `clinical_prep.R`
 downloads them, keeps the FOLFOX arm of each, and checks every regimen
 against the series' own GEO summary rather than its column labels. The
 four Affymetrix studies (GPL570: GSE28702, GSE19860, GSE69657, GSE72970)
@@ -209,36 +209,36 @@ are ComBat-corrected together. The Agilent study (GSE104645, GPL6480) is
 two-colour log-ratio data, a different technology rather than a batch, so
 it is never pooled. Covariates: tumour purity (ESTIMATE), CMS subtype
 (CMScaller), and an MSI-like call from CMScaller's MSI template, since no
-series reports a molecular MSI test. Stage 14 scores every sample with
+series reports a molecular MSI test. Stage 07 scores every sample with
 `lib.cohorts.score_cohort` (the same rank-based scoring as the cell
 lines) and fits a logistic regression of response on each z-scored
 score, unadjusted and adjusted for purity, CMS, MSI and study.
 
-## Methylation (stages 15 to 18, 21, 22)
+## Methylation (the two methylation prep scripts, stages 08 and 09)
 
-The GDSC 450K array (GEO GSE68379, processed beta values). Stage 15 (R)
+The GDSC 450K array (GEO GSE68379, processed beta values). `methylation_prep.R`
 masks betas with detection p ≥ 0.01 and removes cross-reactive, SNP and
-sex-chromosome probes; stage 16 aggregates probes to promoter
-(TSS1500/TSS200) and gene-body matrices, as beta and M values. Stage 17
+sex-chromosome probes; stage 08 aggregates probes to promoter
+(TSS1500/TSS200) and gene-body matrices, as beta and M values. It then
 repeats the COREAD MSI adjustment with continuous MLH1 promoter
-methylation in place of the binary MSI call. Stage 18 fits the stage 04
+methylation in place of the binary MSI call, and fits the stage 02
 pipeline on methylation alone and as a late fusion (average of the
 expression and methylation predictions), and scores DTP on promoter
-M values with the unchanged `lib.signatures` scoring. Stages 21 (R) and
-22 split promoter methylation by CpG-island relation (island, N/S shore,
+M values with the unchanged `lib.signatures` scoring. `methylation_context_prep.R` and
+stage 09 split promoter methylation by CpG-island relation (island, N/S shore,
 N/S shelf, open sea) plus an enhancer stratum, and rerun the
 methylation-DTP test in each, BH-corrected per screen. At least
 `config.OVERLAP_MIN` lines must have both expression and methylation.
 
-## TF activity and chromatin (stages 19 and 20)
+## TF activity and chromatin (stages 10 and 11)
 
-Stage 19 infers transcription-factor activity from expression with
+Stage 10 infers transcription-factor activity from expression with
 decoupler (ULM on the CollecTRI regulon), then models response from TF
 activity and tests TFs against DTP and AUC within COREAD. Ten TFs were
 pre-specified (TEAD1 to 4, MYC, E2F1, TP53, SOX9, HNF4A, CDX2) and are
 reported at raw p; every other TF is exploratory and BH-corrected as its
 own pool. If CollecTRI cannot be downloaded the stage stops rather than
-silently switching regulon. Stage 20 counts TCGA COAD ATAC-seq peaks
+silently switching regulon. Stage 11 counts TCGA COAD ATAC-seq peaks
 (distal and promoter) assigned to each gene and compares each signature
 with 2,000 random gene sets matched on expression and gene length (5 × 5
 bins).

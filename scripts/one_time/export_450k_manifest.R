@@ -3,7 +3,7 @@
 #
 # Export 450K probe annotation (probe ID, gene, UCSC_RefGene_Group,
 # Relation_to_Island, enhancer flag) from
-# IlluminaHumanMethylation450kanno.ilmn12.hg19, for stage 21.
+# IlluminaHumanMethylation450kanno.ilmn12.hg19, for stages/prep/methylation_context_prep.R.
 #
 # Run:    Rscript scripts/one_time/export_450k_manifest.R
 # Writes: data/raw/methylation/humanmethylation450_manifest.csv

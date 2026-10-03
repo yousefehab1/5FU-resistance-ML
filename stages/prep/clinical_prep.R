@@ -1,10 +1,10 @@
 # ==============================================================================
-# 13_clinical_prep.R
+# clinical_prep.R
 #
 # Download the five FOLFOX clinical cohorts from GEO, keep the FOLFOX-treated
 # arm of each, ComBat-correct the four Affymetrix (GPL570) studies together,
 # and derive the covariates: tumour purity, CMS subtype, MSI-like status.
-# Scoring and statistics happen in 14_clinical_validation.py.
+# Scoring and statistics happen in 07_clinical_validation.py.
 #
 # Outputs (data/processed/):
 #   clinical_expr_gpl570_combat.csv     genes x samples, 4 studies, ComBat-corrected
@@ -30,7 +30,7 @@
 #   MSI     no series reports a molecular MSI test, so CMScaller's MSI
 #           expression template is used as an MSI-like proxy, reported as such.
 #
-# Run: Rscript stages/13_clinical_prep.R
+# Run: Rscript stages/prep/clinical_prep.R
 # ==============================================================================
 
 suppressMessages({

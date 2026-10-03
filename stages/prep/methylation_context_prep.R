@@ -1,8 +1,8 @@
 # ==============================================================================
-# 21_methylation_context_prep.R
+# methylation_context_prep.R
 #
-# R half of 22_methylation_context.py. Re-reads the probe-level 450K matrix
-# with the same masking and probe filters as stage 15 (which keeps only gene-level
+# R half of 09_methylation_context.py. Re-reads the probe-level 450K matrix
+# with the same masking and probe filters as methylation_prep.R (which keeps only gene-level
 # aggregates), then aggregates promoter probes separately per CpG-island
 # relation (Island, N_Shore, S_Shore, N_Shelf, S_Shelf, OpenSea), plus an
 # enhancer stratum (Enhancer = TRUE, any gene part).
@@ -10,7 +10,7 @@
 # Needs data/raw/methylation/humanmethylation450_manifest.csv
 # (export_450k_manifest.R).
 #
-# Run: Rscript stages/21_methylation_context_prep.R
+# Run: Rscript stages/prep/methylation_context_prep.R
 # ==============================================================================
 
 suppressMessages({
@@ -30,7 +30,7 @@ banner <- function(x) cat("\n", strrep("=", 78), "\n", x, "\n", strrep("=", 78),
 DETECTION_P_MAX <- 0.01
 
 # ==============================================================================
-# Steps 0-4: identical to 15_methylation_prep.R (see its comments for the
+# Steps 0-4: identical to methylation_prep.R (see its comments for the
 # reasoning behind each choice) -- reproduced here because the filtered
 # probe-level matrix isn't persisted by that script.
 # ==============================================================================

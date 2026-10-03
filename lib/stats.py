@@ -32,7 +32,7 @@ import config as C
 
 N_BOOT = 500
 
-# Stage 12 resamples 2000 times where everything else resamples 500. It is
+# stages/06_drug_specificity.py resamples 2000 times where everything else resamples 500. It is
 # estimating a difference of two correlations, which is noisier than either one.
 N_BOOT_DIFF = 2000
 

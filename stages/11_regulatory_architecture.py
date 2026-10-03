@@ -5,8 +5,8 @@ matched random gene sets.
 
 Inputs:  data/raw/atac/ (COAD peak calls, peak-to-gene links, gene_tss_hg38.csv)
 Outputs: data/processed/coad_gene_regulatory_architecture.csv,
-         regulatory_permutation_results.csv, reports/20_regulatory_architecture.md
-Run:     python stages/20_regulatory_architecture.py
+         regulatory_permutation_results.csv, reports/regulatory_architecture.md
+Run:     python stages/11_regulatory_architecture.py
 """
 
 from pathlib import Path
@@ -23,17 +23,9 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config as C
-
-ROOT = C.PROJECT_ROOT
-RAW_ATAC = ROOT / "data" / "raw" / "atac"
-PROC = ROOT / "data" / "processed"
-DOCS = ROOT / "data" / "processed" / "reports"  # generated reports
-
-# Analysis parameters live in config.py; nothing here re-declares one.
 from lib.cohorts import load_model_derived_genes
-from config import SEED
 from lib.io import solid_screen
-from lib.report import banner
+from lib.report import banner, write_and_report, write_report
 from lib import signatures as S
 
 N_PERM = 2000
@@ -48,21 +40,21 @@ SIGNATURE_SETS = ["DTP_up", "DTP_down", "RSC", "CBC", "Fetal", "CellCycle", "MYC
 # -----------------------------------------------------------------------
 
 def load_coad_peaks():
-    df = pd.read_csv(RAW_ATAC / "peak_calls" / "COAD_peakCalls.txt", sep="\t")
+    df = pd.read_csv(C.ATAC_DIR / "peak_calls" / "COAD_peakCalls.txt", sep="\t")
     print(f"  COAD peaks: {len(df)}")
     print(f"  annotation breakdown: {df.annotation.value_counts().to_dict()}")
     return df
 
 
 def load_pancancer_peaks():
-    df = pd.read_csv(RAW_ATAC / "TCGA-ATAC_PanCancer_PeakSet.txt", sep="\t")
+    df = pd.read_csv(C.ATAC_DIR / "TCGA-ATAC_PanCancer_PeakSet.txt", sep="\t")
     print(f"  pan-cancer peaks: {len(df)}")
     return df
 
 
 def load_links():
     wb = openpyxl.load_workbook(
-        RAW_ATAC / "TCGA-ATAC_DataS7_PeakToGeneLinks_v2.xlsx", read_only=True)
+        C.ATAC_DIR / "TCGA-ATAC_DataS7_PeakToGeneLinks_v2.xlsx", read_only=True)
     ws = wb["All_Links"]
     cols = ["Chromosome", "Start", "End", "hg19_Chromosome", "hg19_Start", "hg19_End",
             "Peak_ID", "Peak_Name", "Linked_Distance", "Linked_Gene", "Linked_Gene_Start",
@@ -77,7 +69,7 @@ def load_links():
 
 
 def load_gene_tss():
-    df = pd.read_csv(RAW_ATAC / "gene_tss_hg38.csv")
+    df = pd.read_csv(C.ATAC_DIR / "gene_tss_hg38.csv")
     print(f"  gene TSS/length reference: {len(df)} genes (hg38)")
     return df
 
@@ -167,7 +159,7 @@ def b1_gene_architecture(coad_peaks, pan_peaks, links, tss):
     counts["distal_to_promoter_ratio"] = counts.n_distal / (counts.n_promoter + 1)
     counts["distal_fraction"] = counts.n_distal / (counts.n_distal + counts.n_promoter)
     counts = counts.reset_index().rename(columns={"nearest_gene": "gene"})
-    counts.to_csv(PROC / "coad_gene_regulatory_architecture.csv", index=False)
+    write_and_report(counts, C.PROCESSED / "coad_gene_regulatory_architecture.csv")
     print(f"  {len(counts)} genes with >=1 assigned Distal or Promoter peak")
     return counts, n_linked, len(coad_peaks), n_agree
 
@@ -239,7 +231,7 @@ def b2_b3_permutation_tests(arch_df, tss, expr_mean, model_genes):
     gene_sets["model_413"] = model_genes
 
     rows = []
-    rng = np.random.default_rng(SEED)
+    rng = np.random.default_rng(C.SEED)
     for metric in ["distal_fraction", "n_distal"]:
         print(f"\n  -- metric: {metric} --")
         for name, genes in gene_sets.items():
@@ -251,7 +243,7 @@ def b2_b3_permutation_tests(arch_df, tss, expr_mean, model_genes):
         res_df["q"] = np.nan
         for metric, sub in res_df.groupby("metric"):
             res_df.loc[sub.index, "q"] = false_discovery_control(sub["p"].to_numpy())
-    res_df.to_csv(PROC / "regulatory_permutation_results.csv", index=False)
+    write_and_report(res_df, C.PROCESSED / "regulatory_permutation_results.csv")
     return res_df, len(universe)
 
 
@@ -263,7 +255,7 @@ def write_doc(counts, n_linked, n_total_peaks, n_agree, res_df, n_universe):
     lines = []
     lines.append("# Regulatory architecture: is the DTP programme enhancer-driven in COAD tissue?\n")
     lines.append(
-        "Follow-up to `18_methylation_models.md` and `22_methylation_context.md`: "
+        "Follow-up to `methylation_models.md` and `methylation_context.md`: "
         "those tasks tested DNA methylation, which measures promoters and CpG-island-relative "
         "contexts well but enhancers only indirectly (a genomic-overlap flag, not a functional "
         "assay). This task uses real tissue chromatin accessibility (TCGA-ATAC, Corces et al. "
@@ -389,8 +381,7 @@ def write_doc(counts, n_linked, n_total_peaks, n_agree, res_df, n_universe):
     lines.append("data/processed/regulatory_permutation_results.csv\n")
     lines.append("```\n")
 
-    DOCS.mkdir(parents=True, exist_ok=True)
-    (DOCS / "20_regulatory_architecture.md").write_text("".join(lines))
+    write_report("regulatory_architecture.md", "".join(lines))
 
 
 def main():
@@ -414,11 +405,8 @@ def main():
 
     banner("WRITING DOC")
     write_doc(counts, n_linked, n_total_peaks, n_agree, res_df, n_universe)
-    print(f"  -> {DOCS / '20_regulatory_architecture.md'}")
 
     banner("DONE")
-    print(f"  -> {PROC / 'coad_gene_regulatory_architecture.csv'}")
-    print(f"  -> {PROC / 'regulatory_permutation_results.csv'}")
 
 
 if __name__ == "__main__":

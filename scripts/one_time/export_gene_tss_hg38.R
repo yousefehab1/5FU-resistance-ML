@@ -2,7 +2,7 @@
 # export_gene_tss_hg38.R
 #
 # Export one TSS per gene on hg38 (TxDb.Hsapiens.UCSC.hg38.knownGene) for
-# 20_regulatory_architecture.py. The TCGA peak-to-gene links cover only
+# 11_regulatory_architecture.py. The TCGA peak-to-gene links cover only
 # 11-23% of COAD peaks, so the remaining peaks are assigned to the nearest TSS.
 #
 # Per gene: symbol, chrom, tss, strand, gene_start, gene_end, gene_length.

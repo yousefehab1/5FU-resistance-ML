@@ -20,7 +20,7 @@ be checked by opening that file after running the pipeline. See
 | Pan-solid model → CRC (transfer) | 0.271 | [0.012, 0.492] | `final_model_results.csv` |
 | CRC-only model | 0.116 | [−0.047, 0.236] | `final_model_results.csv` |
 | Permuted labels (B5, leakage tripwire) | −0.031 | n/a | `baseline_results.csv` |
-| Out-of-fold, calibrated (dashboard display) | 0.457 | n/a | printed by `stages/23_build_dashboard_data.py` |
+| Out-of-fold, calibrated (dashboard display) | 0.457 | n/a | printed by `stages/12_dashboard_data.py` |
 
 Assay-resolution split (`final_model_results.csv`): responsive lines
 (AUC≤0.95) r=0.467; assay-ceiling lines (AUC>0.95, ~29% of the cohort)
@@ -86,7 +86,7 @@ Confirmed directly: DTP's trend survives adjusting for CellCycle
 
 Alias-fix recovery jump: DTP_up signature recovery in the time-course
 went from 67.4% (pre-fix, hardcoded HGNC vintage mismatch) to 86.7%
-(post-fix, printed by `stages/08_armB_induction.py`), close to GDSC's own
+(post-fix, printed by `stages/04_armB_induction.py`), close to GDSC's own
 91.1% recovery, confirming the alias resolution genuinely fixes the
 cross-arm symbol-vintage mismatch rather than papering over it.
 
@@ -123,8 +123,8 @@ show no consistent signal in either cohort.
 
 ## Other drugs
 
-`multidrug_model_results.csv`: the stage 04 pipeline, not retuned, run on
-each drug in the screen stage 10's QC chose for it (`multidrug_qc.csv`):
+`multidrug_model_results.csv`: the stage 02 pipeline, not retuned, run on
+each drug in the screen stage 05's QC chose for it (`multidrug_qc.csv`):
 
 | Drug | Screen | n | Raw r [95% CI] | De-confounded r [95% CI] |
 |---|---|---|---|---|
@@ -179,7 +179,7 @@ prognostic association, not a predictive one (see
   Methylation-only models reach r=0.417 (GDSC1) and 0.460 (GDSC2), close
   to expression on the same lines (0.441 / 0.552). Late fusion adds at
   most 0.019.
-- **DTP gene promoters** (`reports/18_methylation_models.md`). Methylation
+- **DTP gene promoters** (`reports/methylation_models.md`). Methylation
   of DTP gene promoters tracks the expression DTP score in the silencing
   direction (r=−0.26 in both screens), but a methylation-derived DTP score
   does not predict response (p=0.25 and 0.26).

@@ -13,6 +13,8 @@ as part of printing it, and the dashboard reads only those files.
 import numpy as np
 from scipy import stats
 
+import config as C
+
 
 def banner(text):
     print("\n" + "=" * 78 + f"\n{text}\n" + "=" * 78)
@@ -52,3 +54,11 @@ def write_and_report(df, path, label=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
     print(f"  wrote {label or path.name}  ({df.shape[0]:,} rows) -> {path}")
+
+
+def write_report(name, text):
+    """Write one generated markdown report to data/processed/reports/."""
+    C.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = C.REPORTS_DIR / name
+    path.write_text(text)
+    print(f"  -> {path}")

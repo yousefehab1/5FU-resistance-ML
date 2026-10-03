@@ -85,7 +85,7 @@ independent corroboration (`config.REFERENCE_MODULES`,
 
 No signature in this project's 7-signature panel resolves at 100% against
 either dataset's gene universe (see the per-signature recovery percentages
-printed by `stages/02_score_signatures.py` and `stages/08_armB_induction.py`).
+printed by `stages/01_build_tables.py` and `stages/04_armB_induction.py`).
 Genes that fail to resolve, even after HGNC alias matching, are simply
 absent from that signature's score for that dataset; this is a real,
 quantified gap in coverage, not an approximation error to explain away.
@@ -145,5 +145,5 @@ silently.
 Expression is float32, and full-data ElasticNet fits on float32 input
 shift by about 5×10⁻⁷ between library versions. `tests/test_golden.py`
 compares at 1×10⁻⁹, so it passes only with `requirements.txt` as pinned.
-Stage 19 also downloads the CollecTRI regulon at run time; if that
+Stage 10 also downloads the CollecTRI regulon at run time; if that
 network changes upstream, the TF results change with it.

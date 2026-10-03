@@ -5,7 +5,7 @@
 Streamlit app over the precomputed results.
 
     pip install streamlit
-    python stages/23_build_dashboard_data.py     # once, after the rest of the pipeline
+    python stages/12_dashboard_data.py     # once, after the rest of the pipeline
     streamlit run app.py
 
 Design principle: every number shown is paired with what it should be judged
@@ -15,12 +15,10 @@ whole project has turned on that distinction, so the dashboard reflects it.
 
 Every number below, including the caveat prose, is read from
 data/processed/dashboard/*.csv -- itself read exclusively from earlier
-stages' outputs (see stages/23_build_dashboard_data.py). Nothing here is
+stages' outputs (see stages/12_dashboard_data.py). Nothing here is
 hand-typed. If a number changes upstream, rerunning the pipeline changes
 this page; nothing needs editing here.
 """
-
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,8 +27,8 @@ import streamlit as st
 
 import config as C
 
-DATA = Path(__file__).resolve().parent / "data" / "processed" / "dashboard"
-PROC = Path(__file__).resolve().parent / "data" / "processed"
+DATA = C.DASHBOARD_DIR
+PROC = C.PROCESSED
 MODULES = C.ALL_MODULES
 CEILING = C.CEILING_R[C.TARGET]
 
@@ -53,7 +51,7 @@ def load():
 
 
 if not DATA.exists():
-    st.error("Dashboard data not found. Run: python stages/23_build_dashboard_data.py")
+    st.error("Dashboard data not found. Run: python stages/12_dashboard_data.py")
     st.stop()
 
 lines, results, findings, tc, drug_sim, gene_target, comp_ctrl, cc_adj = load()

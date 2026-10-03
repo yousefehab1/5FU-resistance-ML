@@ -7,7 +7,7 @@ Score an external expression cohort with the project's signatures.
 score_cohort() applies the curated signatures and the 413 model genes (as a
 plain gene set) to any matrix. Low gene recovery or an unrecognised gene
 namespace stops the run with sys.exit(1) rather than scoring a different gene
-set under the same name. Used by stage 13 (clinical validation) and tests/test_score_cohort.py.
+set under the same name. Used by stages/07_clinical_validation.py and tests/test_score_cohort.py.
 """
 
 import contextlib

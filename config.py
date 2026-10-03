@@ -20,6 +20,10 @@ RAW = PROJECT_ROOT / "data" / "raw"
 PROCESSED = PROJECT_ROOT / "data" / "processed"
 MODELS_DIR = PROJECT_ROOT / "models"
 DASHBOARD_DIR = PROCESSED / "dashboard"
+REPORTS_DIR = PROCESSED / "reports"    # generated markdown reports, one per analysis
+TARGETS_DIR = PROCESSED / "targets"    # per-drug response tables (multidrug stage)
+METHYLATION_CONTEXT_DIR = PROCESSED / "methylation_by_context"
+FIGURES_DIR = PROJECT_ROOT / "figures"
 SIGDIR = RAW / "signatures"
 
 # Raw input files (named constants so a filename change is a one-line edit).
@@ -30,6 +34,9 @@ MODEL_LIST_FILE = RAW / "model_list_20260724.csv"
 MUTATIONS_FILE = RAW / "mutations_summary_20260724.csv"
 TIMECOURSE_FILE = RAW / "Sup_Table_2_HCT116_5FU_timecourse_treatment.txt"
 ALIAS_MAP_FILE = RAW / "hgnc_alias_map.csv"
+COMPOUNDS_FILE = RAW / "screened_compounds_rel_8.4.csv"
+ATAC_DIR = RAW / "atac"
+METHYLATION_MANIFEST = RAW / "methylation" / "humanmethylation450_manifest.csv"
 
 # ============================================================================
 # COHORT / SCREEN DEFINITION
@@ -124,14 +131,14 @@ COVARIATES_NUM = ["mutational_burden"]
 FU_DRUG_NAME = "5-Fluorouracil"
 MIN_DRUG_LINES = 300    # a drug must be screened on at least this many lines
 
-# Drugs modelled one by one (stages 10-12). Oxaliplatin and irinotecan are
-# only in GDSC2. Order sets CSV row order.
+# Drugs modelled one by one (multidrug and drug-specificity stages).
+# Oxaliplatin and irinotecan are only in GDSC2. Order sets CSV row order.
 DRUGS = ["5-Fluorouracil", "Oxaliplatin", "SN-38", "Irinotecan", "Cisplatin"]
 MIN_N_TASK = 300        # minimum lines for a drug to be modelled
 MIN_N_STOP = 30         # below this, stop and report rather than fit
 
 # ============================================================================
-# METHYLATION (stages 15-20)
+# METHYLATION
 # ============================================================================
 OVERLAP_MIN = 300       # minimum methylation/expression sample overlap
 

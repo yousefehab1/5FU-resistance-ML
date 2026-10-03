@@ -1,6 +1,6 @@
-"""lib.cohorts.score_cohort must reproduce stage 08's HCT116 time-course scores.
+"""lib.cohorts.score_cohort must reproduce stages/04_armB_induction.py's HCT116 time-course scores.
 
-score_cohort is how every external cohort (stage 14's clinical studies) is
+score_cohort is how every external cohort (the clinical studies of stages/07_clinical_validation.py) is
 scored, so it has to agree with the scoring the time-course analysis used.
 Needs data/raw/ and a populated data/processed/; skipped otherwise.
 """

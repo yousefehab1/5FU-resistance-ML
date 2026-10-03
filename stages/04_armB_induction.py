@@ -1,11 +1,8 @@
 """
-stages/08_armB_induction.py
-==============================
-
 Arm B. Does 5-FU treatment induce the DTP and regenerative programmes over
 time in HCT116?
 
-Arm A (stages 01-07) asks whether BASELINE expression predicts 5-FU
+Arm A (stages 01-03) asks whether BASELINE expression predicts 5-FU
 sensitivity ACROSS cell lines. Arm B asks whether TREATMENT changes these
 programmes WITHIN one line. Different data, different failure modes -- two
 weak but independent lines of evidence pointing the same way is an
@@ -203,7 +200,7 @@ def main():
                 flag = "  <-- both positive" if (ra > 0.2 and rb > 0.2) else ""
                 print(f"  {f:<12} {ra:>+21.3f} {rb:>+20.3f}{flag}")
     else:
-        print("  Run stages 01-03 first for the cross-arm comparison.")
+        print("  Run stages/01_build_tables.py first for the cross-arm comparison.")
 
     banner("7. HOW TO READ THIS")
     print("  * n=3 per timepoint. These are effect sizes with a direction, not")

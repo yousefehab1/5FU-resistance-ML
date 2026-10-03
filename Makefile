@@ -1,5 +1,6 @@
-# Stages run in numeric order. The three R steps (13, 15, 21) need Bioconductor
-# and download from GEO; run them with `make r-prep` only when their inputs change.
+# Stages run in numeric order. The three R steps in stages/prep/ need Bioconductor
+# and download from GEO; run `make r-prep` once before `make run`, then only when
+# their inputs change.
 
 PY ?= $(shell test -x .venv/bin/python && echo .venv/bin/python || echo python3)
 PY_STAGES := $(sort $(wildcard stages/*.py))
@@ -21,9 +22,9 @@ run:
 	@set -e; for s in $(PY_STAGES); do echo ">>> $$s"; $(PY) $$s; done
 
 r-prep:
-	Rscript stages/13_clinical_prep.R
-	Rscript stages/15_methylation_prep.R
-	Rscript stages/21_methylation_context_prep.R
+	Rscript stages/prep/clinical_prep.R
+	Rscript stages/prep/methylation_prep.R
+	Rscript stages/prep/methylation_context_prep.R
 
 test:
 	$(PY) -m pytest -q

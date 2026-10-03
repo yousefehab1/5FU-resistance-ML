@@ -3,11 +3,12 @@
 First reports how much of each gene set each context covers, then reruns the
 methylation-DTP test within each stratum with BH correction per screen.
 
-Inputs:  data/processed/methylation_by_context/*_M.csv (from stage 21),
+Inputs:  data/processed/methylation_by_context/*_M.csv
+         (from stages/prep/methylation_context_prep.R),
          data/raw/methylation/humanmethylation450_manifest.csv
 Outputs: data/processed/methylation_context_coverage.csv,
-         methylation_context_results.csv, reports/22_methylation_context.md
-Run:     Rscript stages/21_methylation_context_prep.R && python stages/22_methylation_context.py
+         methylation_context_results.csv, reports/methylation_context.md
+Run:     Rscript stages/prep/methylation_context_prep.R && python stages/09_methylation_context.py
 """
 
 from pathlib import Path
@@ -22,16 +23,8 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config as C
-
-ROOT = C.PROJECT_ROOT
-PROC = ROOT / "data" / "processed"
-DOCS = ROOT / "data" / "processed" / "reports"  # generated reports
-CTX_DIR = PROC / "methylation_by_context"
-MANIFEST = ROOT / "data" / "raw" / "methylation" / "humanmethylation450_manifest.csv"
-
-# Analysis parameters live in config.py; nothing here re-declares one.
 from lib.io import solid_screen
-from lib.report import banner
+from lib.report import banner, write_and_report, write_report
 from lib import signatures as S
 from lib.stats import bootstrap_r
 
@@ -42,7 +35,7 @@ ENHANCER_COVERAGE_MIN = 0.05     # stop, don't model, below this
 
 def explode_manifest(man):
     """Probe -> (gene, region) long table, genes and regions kept positionally
-    aligned (same convention as 21_methylation_context_prep.R's split)."""
+    aligned (same convention as methylation_context_prep.R's split)."""
     m = man.copy()
     m["gene_list"] = m["gene"].fillna("").str.split(";")
     m["region_list"] = m["region"].fillna("").str.split(";")
@@ -57,7 +50,7 @@ def c1_coverage_audit():
     print("  for modelling (that filter removes ~29% of probes but is not")
     print("  gene-set-selective, so it does not change which genes are covered).")
 
-    man = pd.read_csv(MANIFEST, dtype=str, low_memory=False)
+    man = pd.read_csv(C.METHYLATION_MANIFEST, dtype=str, low_memory=False)
     universe = set()
     for g in man["gene"].dropna():
         universe.update(g.split(";"))
@@ -90,7 +83,7 @@ def c1_coverage_audit():
                          **{f"region_{k}": v for k, v in region_counts.items()}))
 
     cov_df = pd.DataFrame(rows)
-    cov_df.to_csv(PROC / "methylation_context_coverage.csv", index=False)
+    write_and_report(cov_df, C.PROCESSED / "methylation_context_coverage.csv")
 
     print("\n  NOTE ON WHAT 'Enhancer=TRUE' MEANS HERE: this manifest column flags a")
     print("  probe as overlapping a catalogued (FANTOM5-derived) enhancer element")
@@ -113,7 +106,7 @@ def c1_coverage_audit():
 
 
 def load_stratum(name):
-    df = pd.read_csv(CTX_DIR / f"{name}_M.csv")
+    df = pd.read_csv(C.METHYLATION_CONTEXT_DIR / f"{name}_M.csv")
     df = df.set_index("gene").T
     df.index.name = None
     return df
@@ -150,7 +143,7 @@ def c3_rerun_by_stratum(can_test_enhancer):
     stratum_dfs = {}
     for st in strata_to_run:
         name = f"promoter_{st}" if st in STRATA else "enhancer"
-        path = CTX_DIR / f"{name}_M.csv"
+        path = C.METHYLATION_CONTEXT_DIR / f"{name}_M.csv"
         if not path.exists():
             print(f"  !! {name}_M.csv not found -- skipping stratum {st}")
             continue
@@ -158,7 +151,7 @@ def c3_rerun_by_stratum(can_test_enhancer):
         print(f"  loaded stratum {st:<10} {stratum_dfs[st].shape[1]} genes x {stratum_dfs[st].shape[0]} samples")
 
     rows = []
-    for label in ["GDSC1", "GDSC2"]:
+    for label in [C.TRAIN, C.TEST]:
         banner(f"Q3 per stratum -- {label}")
         Xe, y, s = solid_screen(label)
         for st, df in stratum_dfs.items():
@@ -177,7 +170,7 @@ def c3_rerun_by_stratum(can_test_enhancer):
         for label, sub in res_df.groupby("screen"):
             res_df.loc[sub.index, "q_meth_vs_expr"] = false_discovery_control(sub["p_meth_vs_expr"].to_numpy())
             res_df.loc[sub.index, "q_meth_vs_auc"] = false_discovery_control(sub["p_meth_vs_auc"].to_numpy())
-    res_df.to_csv(PROC / "methylation_context_results.csv", index=False)
+    write_and_report(res_df, C.PROCESSED / "methylation_context_results.csv")
     return res_df
 
 
@@ -187,18 +180,15 @@ def main():
 
     banner("WRITING DOC")
     write_doc(cov_df, res_df, can_test_enhancer)
-    print(f"  -> {DOCS / '22_methylation_context.md'}")
 
     banner("DONE")
-    print(f"  -> {PROC / 'methylation_context_coverage.csv'}")
-    print(f"  -> {PROC / 'methylation_context_results.csv'}")
 
 
 def write_doc(cov_df, res_df, can_test_enhancer):
     lines = []
     lines.append("# Methylation by regulatory context\n")
     lines.append(
-        "Follow-up to `18_methylation_models.md`: that test "
+        "Follow-up to `methylation_models.md`: that test "
         "pooled all promoter-associated probes together. This reruns the same "
         "meth-DTP-vs-expression-DTP test **stratified by CpG-island relation "
         "and by an enhancer-probe flag**, to check whether pooling hid a "
@@ -239,7 +229,7 @@ def write_doc(cov_df, res_df, can_test_enhancer):
 
     lines.append("\n## C2/C3: Q3 rerun per regulatory stratum\n")
     lines.append(
-        "Same construction as Q3 in 18_methylation_models.py (`lib.signatures.score_all()` applied to a "
+        "Same construction as Q3 in 08_methylation.py (`lib.signatures.score_all()` applied to a "
         "methylation M-value matrix in place of expression, giving a "
         "methylation-space DTP score), rerun separately in each stratum instead "
         "of once on pooled promoter probes. **Multiple-testing burden**: one test "
@@ -329,8 +319,7 @@ def write_doc(cov_df, res_df, can_test_enhancer):
     lines.append("data/processed/methylation_context_results.csv\n")
     lines.append("```\n")
 
-    DOCS.mkdir(parents=True, exist_ok=True)
-    (DOCS / "22_methylation_context.md").write_text("".join(lines))
+    write_report("methylation_context.md", "".join(lines))
 
 
 if __name__ == "__main__":

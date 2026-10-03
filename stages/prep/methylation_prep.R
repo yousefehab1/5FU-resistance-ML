@@ -1,7 +1,7 @@
 # ==============================================================================
-# 15_methylation_prep.R
+# methylation_prep.R
 #
-# Bioconductor half of the methylation ingest; 16_methylation_ingest.py
+# Bioconductor half of the methylation ingest; 08_methylation.py
 # finishes it.
 #
 # Source: GSE68379_Matrix.processed.txt.gz from GEO (processed 450K beta values
@@ -16,7 +16,7 @@
 # SNP and sex-chromosome probes are removed. Only cell lines that map to a
 # SANGER_MODEL_ID are read, to keep memory under 16 GB.
 #
-# Run: Rscript stages/15_methylation_prep.R
+# Run: Rscript stages/prep/methylation_prep.R
 # ==============================================================================
 
 suppressMessages({
@@ -212,7 +212,7 @@ promoter_M <- to_M(promoter_beta)
 body_M <- to_M(body_beta)
 
 # ==============================================================================
-# Step 7: write outputs (CSV here; stages/16_methylation_ingest.py converts
+# Step 7: write outputs (CSV here; stages/08_methylation.py converts
 # to parquet and does the expression-cohort overlap check and QC report).
 # ==============================================================================
 banner("WRITING INTERMEDIATE OUTPUTS")
