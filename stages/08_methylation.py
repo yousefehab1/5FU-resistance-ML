@@ -35,7 +35,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config as C
 from lib.io import solid_screen, surviving_genes
-from lib.modeling import elasticnet_pipeline, permuted_label_check
+from lib.modeling import chosen_alpha, elasticnet_pipeline, permuted_label_check, summarise
 from lib.report import banner, write_and_report, write_report
 from lib import signatures as S
 from lib.stats import bootstrap_r, partial_corr
@@ -239,12 +239,17 @@ def mlh1_msi():
                                 columns=["MLH1"])["MLH1"]
     print(f"  MLH1 promoter methylation available for {mlh1_M.notna().sum()} cell lines")
 
-    cohorts = {}
+    cohorts, msi_known = {}, {}
     for label in [C.TRAIN, C.TEST]:
         y = pd.read_parquet(C.PROCESSED / f"y_{label}.parquet")
         s = pd.read_parquet(C.PROCESSED / f"signature_scores_{label}.parquet")
         df = y[[C.LINEAGE_COL, C.TARGET, "msi_status"]].join(s[["DTP"]]).join(mlh1_M.rename("MLH1_M")).join(mlh1_beta.rename("MLH1_beta"))
-        df = df[(df[C.LINEAGE_COL] == C.CRC) & df.msi_status.notna() & df.MLH1_M.notna()]
+        df = df[(df[C.LINEAGE_COL] == C.CRC) & df.msi_status.notna()]
+        # stage 03's MSI adjustment uses every COREAD line with an MSI call;
+        # this stage also needs methylation. Keep both so the two analyses
+        # can be reconciled line by line.
+        msi_known[label] = df
+        df = df[df.MLH1_M.notna()]
         cohorts[label] = df
         print(f"  {label} COREAD with MSI status AND methylation: n={len(df)}")
 
@@ -299,12 +304,22 @@ def mlh1_msi():
         r_dtp_mlh1, _ = stats.pearsonr(dtp, mlh1)
         print(f"      (DTP vs binary MSI: r={r_dtp_msi:+.3f}; DTP vs continuous MLH1: r={r_dtp_mlh1:+.3f})")
 
+        full = msi_known[label]
+        r_full, p_full = partial_corr(full.DTP.to_numpy(), full[C.TARGET].to_numpy(),
+                                      [(full.msi_status == "MSI").astype(float).to_numpy()])
+        dropped = sorted(set(full.index) - set(df.index))
+        print(f"      {'same, all MSI-called lines':<28} r={r_full:+.3f}  p={p_full:.4f}  "
+              f"(n={len(full)}; no methylation for {', '.join(dropped) or 'none'})")
+
         result_rows.append(dict(cohort=label, n=len(df),
                                  r_unadjusted=r_raw, p_unadjusted=p_raw,
                                  r_adj_binary_MSI=r_msi, p_adj_binary_MSI=p_msi,
                                  r_adj_MLH1_methylation=r_mlh1, p_adj_MLH1_methylation=p_mlh1,
                                  r_adj_both=r_both, p_adj_both=p_both,
-                                 r_DTP_vs_binary_MSI=r_dtp_msi, r_DTP_vs_MLH1_methylation=r_dtp_mlh1))
+                                 r_DTP_vs_binary_MSI=r_dtp_msi, r_DTP_vs_MLH1_methylation=r_dtp_mlh1,
+                                 n_msi_called=len(full), r_adj_binary_MSI_all_msi_called=r_full,
+                                 p_adj_binary_MSI_all_msi_called=p_full,
+                                 lines_without_methylation=";".join(dropped)))
 
     results_df = pd.DataFrame(result_rows)
     sanity_df = pd.DataFrame(sanity_rows)
@@ -437,34 +452,37 @@ def repeated_cv_multi(Xe, Xm, y):
     """
     y_np = np.asarray(y, dtype=float)
     n = len(y_np)
-    rs_e, rs_m, rs_c = [], [], []
+    shape = (n, C.N_REPEATS)
+    oofs = {k: dict(truth=np.full(shape, np.nan), pred=np.full(shape, np.nan),
+                    fold=np.full(shape, -1)) for k in ("e", "m", "c")}
+    for k in ("e", "m"):
+        oofs[k]["alpha"] = np.full((C.N_FOLDS, C.N_REPEATS), np.nan)
+        oofs[k]["alpha_edge"] = np.full((C.N_FOLDS, C.N_REPEATS), np.nan)
 
+    # The models are fitted on the DataFrames as given (float32), not through
+    # lib.modeling.cv_oof, which upcasts; see lib/modeling.py DTYPE.
     for rep in range(C.N_REPEATS):
         kf = KFold(C.N_FOLDS, shuffle=True, random_state=C.SEED + rep)
-        pe_all, pm_all, truth = [], [], []
-        for tr, te in kf.split(np.arange(n)):
+        for k, (tr, te) in enumerate(kf.split(np.arange(n))):
             me = elasticnet_pipeline().fit(Xe.iloc[tr], y_np[tr])
             mm = elasticnet_pipeline().fit(Xm.iloc[tr], y_np[tr])
-            pe_all.append(me.predict(Xe.iloc[te]))
-            pm_all.append(mm.predict(Xm.iloc[te]))
-            truth.append(y_np[te])
-        pe_all, pm_all, truth = (np.concatenate(pe_all), np.concatenate(pm_all),
-                                  np.concatenate(truth))
-        pc_all = (pe_all + pm_all) / 2
-        rs_e.append(stats.pearsonr(truth, pe_all)[0])
-        rs_m.append(stats.pearsonr(truth, pm_all)[0])
-        rs_c.append(stats.pearsonr(truth, pc_all)[0])
+            pe, pm = me.predict(Xe.iloc[te]), mm.predict(Xm.iloc[te])
+            for key, m in (("e", me), ("m", mm)):
+                oofs[key]["alpha"][k, rep], oofs[key]["alpha_edge"][k, rep] = chosen_alpha(m)
+            for key, pr in (("e", pe), ("m", pm), ("c", (pe + pm) / 2)):
+                oofs[key]["pred"][te, rep] = pr
+                oofs[key]["truth"][te, rep] = y_np[te]
+                oofs[key]["fold"][te, rep] = k
 
-    def summ(rs, name):
-        rs = np.array(rs)
-        lo, hi = np.percentile(rs, [2.5, 97.5])
-        print(f"  {name:<38} r={rs.mean():+.3f}  [{lo:+.3f}, {hi:+.3f}]  "
-              f"(sd {rs.std():.3f} over {C.N_REPEATS} repeats)")
-        return dict(model=name, r_mean=rs.mean(), r_lo=lo, r_hi=hi, r_sd=rs.std())
+    def summ(o, name):
+        row = summarise(o, name)
+        print(f"  {name:<38} r={row['r_mean']:+.3f}  [{row['r_lo']:+.3f}, {row['r_hi']:+.3f}]  "
+              f"(sd {row['r_sd']:.3f} over {C.N_REPEATS} repeats)")
+        return row
 
-    return [summ(rs_e, "expression -> AUC"),
-            summ(rs_m, "methylation (promoter+body) -> AUC"),
-            summ(rs_c, "late fusion (average) -> AUC")]
+    return [summ(oofs["e"], "expression -> AUC"),
+            summ(oofs["m"], "methylation (promoter+body) -> AUC"),
+            summ(oofs["c"], "late fusion (average) -> AUC")]
 
 
 def q3_dtp_epigenetics(pm, overlap, y, s, label):
@@ -590,7 +608,7 @@ def write_models_report(res_df, q3_results):
     lines.append("## Pipeline reuse\n")
     lines.append(
         "The model pipeline (`SelectKBest(f_regression, k=1500) -> StandardScaler "
-        "-> ElasticNet(alpha=0.02, l1_ratio=0.5)`) and its permuted-label check "
+        "-> ElasticNet(l1_ratio=0.5, alpha tuned by inner CV)`) and its permuted-label check "
         "are imported from `lib.modeling`, the same code stages/02_fu_model.py uses. "
         "\"Methylation-only model, same pipeline, same rules\" "
         "is literally the same `elasticnet_pipeline()`, applied to a "

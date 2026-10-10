@@ -56,15 +56,25 @@ HAEM = {"LAML", "ALL", "DLBC", "LCML", "MM", "CLL"}
 
 MIN_LINEAGE_N = 10    # z-scoring a lineage group smaller than this is meaningless
 
-# Measurement-noise ceiling: how well GDSC1 and GDSC2 agree on the SAME
-# cell lines. No model predicting one screen from expression can reasonably
-# be expected to beat this -- it is the ceiling on achievable r, not 1.0.
-CEILING_R = {"AUC": 0.604, "LN_IC50": 0.560}
+# The measurement-noise ceiling (how well GDSC1 and GDSC2 agree on the same
+# lines) is computed by stage 01 on the modelling cohort and read back with
+# lib.io.load_ceiling(); it is data, not a constant.
 
-# Assay ceiling on the target itself (a different thing from CEILING_R): a
+# Assay ceiling on the target itself (a different thing from the noise
+# ceiling above): a
 # line whose AUC is above this was never meaningfully killed by the top dose,
 # so the assay did not resolve how resistant it is.
 CEILING_AUC = 0.95
+
+# Multiplicity policy (docs/METHODS.md, "Multiplicity"). The rows below are
+# the confirmatory tests the DTP claim rests on; every other row of these
+# tables is exploratory. All rows get a Benjamini-Hochberg q within their
+# family (one table, one screen or cohort, one adjustment).
+CONFIRMATORY = {
+    "within_crc_association": [{"feature": "DTP"}],
+    "drug_specificity": [{"drug": "5-Fluorouracil", "module": "DTP"}],
+    "clinical_validation": [{"cohort": "GPL570", "feature": "DTP", "model": "adjusted"}],
+}
 
 # ============================================================================
 # EXPRESSION / FEATURE PREPROCESSING
@@ -117,13 +127,27 @@ SEED = 0
 K_GENES = 1500
 ELASTICNET_PARAMS = dict(alpha=0.02, l1_ratio=0.5, max_iter=3000, random_state=SEED)
 N_REPEATS, N_FOLDS = 5, 5
+# Nested tuning: every fit picks alpha by INNER_FOLDS-fold CV on its own
+# training rows, from this grid (0.002 to 0.5, 13 log steps; l1_ratio stays
+# at 0.5). The alpha above is kept as the fixed reference model. Small
+# alphas dominate the run time on gene-level tables, hence the floor; tables
+# of at most FEW_FEATURES columns (the modules) are cheap at any alpha and
+# want little shrinkage, so theirs reaches 1e-5.
+ELASTICNET_ALPHAS = tuple(0.002 * 250 ** (i / 12) for i in range(13))
+ELASTICNET_ALPHAS_FEW = tuple(1e-5 * 50000 ** (i / 21) for i in range(22))
+FEW_FEATURES = 50
+RIDGE_ALPHAS = tuple(10 ** (i / 2 - 2) for i in range(11))    # 0.01 to 1000
+INNER_FOLDS = 3
 
 # ============================================================================
 # COVARIATES / MUTATIONS
 # ============================================================================
 DRIVER_GENES = ["TP53", "KRAS", "BRAF", "PIK3CA", "APC", "SMAD4", "PTEN", "NRAS"]
 COVARIATES_CAT = ["msi_status", "growth_properties"]
-COVARIATES_NUM = ["mutational_burden"]
+COVARIATES_NUM = ["mutational_burden"]   # log10-transformed where used (stage 03)
+# Mismatch-repair genes; their mean z-scored expression is the MMR score that
+# stage 03 sets against DTP (dtp_mmr_coupling.csv).
+MMR_GENES = ["MLH1", "MSH2", "MSH6", "PMS2"]
 
 # ============================================================================
 # MULTIDRUG

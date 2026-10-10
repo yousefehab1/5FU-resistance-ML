@@ -30,6 +30,7 @@ INPUTS   data/processed/{X,y,signature_scores}_{GDSC1,GDSC2}.parquet
 OUTPUTS  data/processed/baseline_results.csv
          data/processed/within_crc_association.csv
          data/processed/final_model_results.csv
+         data/processed/model_comparisons.csv
          data/processed/final_model_genes.csv
          data/processed/enrichment_results.csv
          data/processed/calibration_results.csv
@@ -48,12 +49,15 @@ import pandas as pd
 from scipy import stats
 
 import config as C
-from lib.io import exclude_haem, load_expression, load_screen
-from lib.modeling import (deconfounded_gene_fit, elasticnet_pipeline, oof_predictions,
-                          repeated_cv, ridge_cv_predict, transfer_to_crc)
+from lib.io import exclude_haem, load_ceiling, load_expression, load_screen
+
+from lib.modeling import (compare_models, cv_leave_lineage_out, deconfounded_gene_fit,
+                          elasticnet_pipeline, fixed_elasticnet_pipeline, oof_predictions,
+                          repeated_cv, ridge_cv_predict, scaled_ridge, transfer_to_crc)
 from lib.report import banner, report_metric, write_and_report
 from lib.signatures import background_score, load_alias_map, load_signatures, rank_matrix
-from lib.stats import hypergeometric_enrichment
+from lib.stats import (bh_q, bootstrap_r, confirmatory_mask, hypergeometric_enrichment,
+                       set_shift_test, signed_set_test)
 
 warnings.filterwarnings("ignore")
 
@@ -68,7 +72,7 @@ def baselines(X, y, scores, y2, scores2):
 
     banner("BASELINES 2. BASELINES")
     target = y[C.TARGET].to_numpy()
-    ceiling = C.CEILING_R[C.TARGET]
+    ceiling = load_ceiling()
     lin = y[[C.LINEAGE_COL]].fillna("UNKNOWN")
     results = []
 
@@ -148,22 +152,41 @@ def baselines(X, y, scores, y2, scores2):
     banner("BASELINES 4. WITHIN-COREAD ASSOCIATION, AND REPLICATION IN GDSC2")
     feats = list(scores.columns)
 
-    print(f"\n  higher {C.TARGET} = more resistant. * = p < 0.05 uncorrected.")
+    print(f"\n  higher {C.TARGET} = more resistant. * = p < 0.05 uncorrected; "
+          f"q is BH within each screen.")
     print(f"  {'feature':<12} {C.TRAIN + ' (n=' + str(int(crc_mask.sum())) + ')':>22}"
           f" {C.TEST + ' (n=' + str(int((y2[C.LINEAGE_COL] == C.CRC).sum())) + ')':>22}")
     crc2 = (y2[C.LINEAGE_COL] == C.CRC).to_numpy()
     crc_rows = []
     for c in feats:
-        r1, p1 = stats.pearsonr(scores.loc[crc_mask, c], y.loc[crc_mask, C.TARGET])
-        r2_, p2 = stats.pearsonr(scores2.loc[crc2, c], y2.loc[crc2, C.TARGET])
+        x1 = scores.loc[crc_mask, c].to_numpy(float)
+        t1 = y.loc[crc_mask, C.TARGET].to_numpy(float)
+        x2 = scores2.loc[crc2, c].to_numpy(float)
+        t2 = y2.loc[crc2, C.TARGET].to_numpy(float)
+        r1, p1, lo1, hi1 = bootstrap_r(x1, t1)
+        r2_, p2, lo2, hi2 = bootstrap_r(x2, t2)
         print(f"  {c:<12} r={r1:+.3f} p={p1:.3f}{'*' if p1 < .05 else ' '}"
               f"      r={r2_:+.3f} p={p2:.3f}{'*' if p2 < .05 else ' '}")
         crc_rows.append(dict(feature=c, r_gdsc1=r1, p_gdsc1=p1, n_gdsc1=int(crc_mask.sum()),
-                              r_gdsc2=r2_, p_gdsc2=p2, n_gdsc2=int(crc2.sum())))
+                              r_gdsc2=r2_, p_gdsc2=p2, n_gdsc2=int(crc2.sum()),
+                              r_gdsc1_lo=lo1, r_gdsc1_hi=hi1, r_gdsc2_lo=lo2, r_gdsc2_hi=hi2))
     print(f"\n  {len(feats)} features -> Bonferroni threshold p < {0.05 / len(feats):.4f}")
     print(f"  NOTE: {C.TEST} re-measures largely the SAME cell lines, so this tests")
     print("  robustness to experimental noise, not generalisation to new lines.")
-    write_and_report(pd.DataFrame(crc_rows), C.PROCESSED / "within_crc_association.csv",
+    # Replication is judged on sign and effect size, not on p: the same sign
+    # in both screens, and bootstrap CIs that overlap.
+    crc_df = pd.DataFrame(crc_rows)
+    crc_df["q_gdsc1"] = bh_q(crc_df.p_gdsc1)
+    crc_df["q_gdsc2"] = bh_q(crc_df.p_gdsc2)
+    crc_df["same_sign"] = np.sign(crc_df.r_gdsc1) == np.sign(crc_df.r_gdsc2)
+    crc_df["ci_overlap"] = ((crc_df.r_gdsc1_lo <= crc_df.r_gdsc2_hi)
+                            & (crc_df.r_gdsc2_lo <= crc_df.r_gdsc1_hi))
+    crc_df["confirmatory"] = confirmatory_mask(crc_df, "within_crc_association")
+    for _, r in crc_df[crc_df.confirmatory].iterrows():
+        print(f"  confirmatory {r.feature}: q={r.q_gdsc1:.3f} ({C.TRAIN}), "
+              f"q={r.q_gdsc2:.3f} ({C.TEST}); same sign={r.same_sign}, "
+              f"CIs overlap={r.ci_overlap}")
+    write_and_report(crc_df, C.PROCESSED / "within_crc_association.csv",
                       "within_crc_association.csv")
 
     banner("BASELINES 5. READ BEFORE MODELLING")
@@ -192,13 +215,58 @@ def final_model(X, y, s):
     res = []
 
     banner("FINAL MODEL 2. REPEATED CV WITH CIs, RAW vs DE-CONFOUNDED")
-    print(f"  {C.N_REPEATS} repeats x {C.N_FOLDS}-fold. CI is across repeats.\n")
-    res.append(repeated_cv(X, t, lin, False, "transcriptome -> raw AUC"))
-    res.append(repeated_cv(X[keep], t[keep], lin[keep], True,
-                            "transcriptome -> AUC, lineage de-confounded"))
-    res.append(repeated_cv(s[C.MODELED_MODULES], t, lin, False, "modules -> raw AUC"))
-    res.append(repeated_cv(s[C.MODELED_MODULES][keep], t[keep], lin[keep], True,
-                            "modules -> AUC, lineage de-confounded"))
+    print(f"  {C.N_REPEATS} repeats x {C.N_FOLDS}-fold. CI: cell-line bootstrap of the "
+          f"out-of-fold predictions.\n")
+    oof = {}
+
+    label = {}
+
+    def cv(key, *args, **kw):
+        row, oof[key] = repeated_cv(*args, return_oof=True, **kw)
+        label[key] = row["model"]
+        return row
+
+    res.append(cv("tx_raw", X, t, lin, False, "transcriptome -> raw AUC"))
+    res.append(cv("tx_dc", X[keep], t[keep], lin[keep], True,
+                  "transcriptome -> AUC, lineage de-confounded"))
+    res.append(cv("mod_raw", s[C.MODELED_MODULES], t, lin, False, "modules -> raw AUC"))
+    res.append(cv("mod_dc", s[C.MODELED_MODULES][keep], t[keep], lin[keep], True,
+                  "modules -> AUC, lineage de-confounded"))
+
+    # The B4 bar (lineage + proliferation) refit on these solid lines and
+    # these splits, so the models can be tested against it directly.
+    lin_f = pd.Series(lin).fillna("UNKNOWN").to_numpy()
+    b4 = pd.get_dummies(pd.Series(lin_f), dtype=float)
+    b4["CellCycle"] = s["CellCycle"].to_numpy()
+    extra = [cv("b4_raw", b4, t, lin, False, "B4 lineage + proliferation (Ridge, same splits)",
+                model_factory=scaled_ridge)]
+    # The fixed-alpha model every earlier result used, on the same splits, so
+    # what nested tuning buys is tested rather than eyeballed.
+    extra.append(cv("tx_raw_fixed", X, t, lin, False, "transcriptome -> raw AUC, fixed alpha",
+                    model_factory=fixed_elasticnet_pipeline))
+    extra.append(cv("tx_dc_fixed", X[keep], t[keep], lin[keep], True,
+                    "transcriptome -> AUC, lineage de-confounded, fixed alpha",
+                    model_factory=fixed_elasticnet_pipeline))
+
+    banner("FINAL MODEL 2b. MODEL COMPARISONS, CORRECTED RESAMPLED t-TEST")
+    # Per-split r differences on identical lines and splits. Splits of
+    # repeated CV share training lines, so the plain t-test is too liberal;
+    # Nadeau and Bengio's correction is applied (lib.stats).
+    pairs = [("tx_raw", "b4_raw"), ("mod_raw", "b4_raw"), ("tx_raw", "mod_raw"),
+             ("tx_dc", "mod_dc"), ("tx_raw", "tx_raw_fixed"), ("tx_dc", "tx_dc_fixed")]
+    comp = pd.DataFrame([compare_models(oof[a], oof[b], label[a], label[b]) for a, b in pairs])
+    comp["q"] = bh_q(comp.p)
+    for _, r in comp.iterrows():
+        print(f"  {r.model_a:<44} vs {r.model_b:<48} "
+              f"d={r.mean_fold_r_diff:+.3f}  t={r.t:+.2f}  p={r.p:.3g}  q={r.q:.3g}")
+    write_and_report(comp, C.PROCESSED / "model_comparisons.csv", "model_comparisons.csv")
+
+    banner("FINAL MODEL 2c. LEAVE WHOLE LINEAGES OUT")
+    # Fold-internal de-confounding still trains on every tissue it is tested
+    # on. Here each lineage is predicted by a model that never saw it.
+    extra.append(cv_leave_lineage_out(X, t, lin_f, "transcriptome -> raw AUC, leave-lineage-out"))
+    extra.append(cv_leave_lineage_out(s[C.MODELED_MODULES], t, lin_f,
+                                      "modules -> raw AUC, leave-lineage-out"))
 
     banner("FINAL MODEL 3. TRANSFER TO CRC")
     crc = (y[C.LINEAGE_COL] == C.CRC).to_numpy()
@@ -258,17 +326,29 @@ def final_model(X, y, s):
                  "lineages": sorted(big)}, C.MODELS_DIR / "final_deconfounded.joblib")
     print("\n  saved models/final_deconfounded.joblib")
 
-    write_and_report(pd.DataFrame(res), C.PROCESSED / "final_model_results.csv",
+    write_and_report(pd.DataFrame(res + extra), C.PROCESSED / "final_model_results.csv",
                       "final_model_results.csv")
 
 
-def enrichment(universe):
-    """Hypergeometric enrichment of the final model's genes per signature.
+def enrichment(X, y):
+    """Hypergeometric enrichment of the final model's genes per signature,
+    then the same signatures tested for DIRECTION.
 
-    `universe` must be the gene set the model actually chose from -- the
-    columns AFTER the missingness filter, not the raw unfiltered expression
-    matrix. Getting this wrong changes every expected-overlap and p-value.
+    The universe is the gene set the model actually chose from -- X's columns
+    AFTER the missingness filter, not the raw unfiltered expression matrix.
+    Getting this wrong changes every expected-overlap and p-value.
+
+    The overlap test cannot tell DTP_up genes carrying resistance-direction
+    coefficients from DTP_up genes carrying sensitivity-direction ones. The
+    signed tests can, on two vectors (positive = higher AUC = resistant):
+      coef_*     the de-confounded model's non-zero coefficients
+      genome_*   every gene's correlation with the de-confounded target, the
+                 preranked analogue of GSEA: each set's mean against genes of
+                 the same expression decile, with a null from permuting the
+                 target within lineage (lib.stats.set_shift_test)
+    DTP_down is expected to point the other way from DTP_up.
     """
+    universe = X.columns
     banner("ENRICHMENT 1. LOADING MODEL GENES AND SIGNATURES")
     genes = pd.read_csv(C.PROCESSED / "final_model_genes.csv")
     sigs = load_signatures(universe, alias_map=load_alias_map())
@@ -285,6 +365,33 @@ def enrichment(universe):
         print(f"  {name:<10} {r['observed_overlap']:>3}/{r['signature_size']:<4} "
               f"(expected {r['expected_overlap']:.2f})  "
               f"fold={r['fold_enrichment']:.2f}x  p={r['p_value']:.2e}{flag}")
+
+    banner("ENRICHMENT 3. DIRECTION")
+    lin = y[C.LINEAGE_COL].to_numpy()
+    cnt = pd.Series(lin).value_counts()
+    keep = np.isin(lin, list(cnt[cnt >= C.MIN_LINEAGE_N].index))
+    Xk = X[keep].to_numpy(float)
+    Xd = Xk - pd.DataFrame(Xk).groupby(lin[keep]).transform("mean").to_numpy()
+    ys = pd.Series(y[C.TARGET].to_numpy()[keep]).groupby(lin[keep])
+    yd = ((y[C.TARGET].to_numpy()[keep] - ys.transform("mean").to_numpy())
+          / ys.transform(lambda v: v.std(ddof=1)).to_numpy())
+    coef = genes.set_index("gene")["coef"]
+    decile = pd.Series(pd.qcut(X.mean().rank(method="first"), 10, labels=False),
+                       index=universe)
+    shift = set_shift_test(pd.DataFrame(Xd, columns=universe), yd, sigs, decile,
+                           groups=lin[keep])
+
+    print(f"  {'signature':<10} {'model genes +/n':>16} {'p_sign':>8}   "
+          f"{'mean r':>8} {'matched':>8} {'shift':>8} {'p_perm':>8}")
+    for row in rows:
+        c = signed_set_test(coef, sigs[row["signature"]])
+        g = shift.loc[row["signature"]]
+        row.update(coef_n=c["n"], coef_n_resistance=c["n_positive"], coef_p_sign=c["p_sign"],
+                   coef_p_rank=c["p_rank"], genome_n=g.n, genome_mean_r=g.mean_r,
+                   genome_background_r=g.background_r, genome_shift=g["shift"],
+                   genome_p_perm=g.p_perm)
+        print(f"  {row['signature']:<10} {c['n_positive']:>7}/{c['n']:<8} {c['p_sign']:>8.3g}   "
+              f"{g.mean_r:>+8.4f} {g.background_r:>+8.4f} {g['shift']:>+8.4f} {g.p_perm:>8.3g}")
 
     write_and_report(pd.DataFrame(rows), C.PROCESSED / "enrichment_results.csv",
                       "enrichment_results.csv")
@@ -344,7 +451,7 @@ def main():
     # Everything from here on is fit on solid tumours only.
     _, y1, X1, s1 = exclude_haem(y1, X1, s1)
     final_model(X1, y1, s1)
-    enrichment(X1.columns)
+    enrichment(X1, y1)
     _, y2, X2 = exclude_haem(y2, load_expression(C.TEST))
     calibration(X1, y1, X2, y2)
     banner("DONE")

@@ -3,6 +3,11 @@
 Five GEO cohorts. Logistic regression of response on each score, unadjusted and
 adjusted for purity, CMS, MSI and study. Prognostic only: every patient got FOLFOX.
 
+Each adjusted test is also read against 1,000 random gene sets of the same
+resolved size, scored and fitted the same way (p_random_null). Many gene sets
+associate with outcome in expression data (Venet et al. 2011), so beating the
+null of no association is not enough; a signature has to beat random ones.
+
 Inputs:  data/processed/clinical_expr_*.csv, clinical_covariates.csv
          (from stages/prep/clinical_prep.R)
 Outputs: data/processed/clinical_validation.csv, reports/clinical_validation.md,
@@ -23,17 +28,15 @@ import statsmodels.formula.api as smf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config  # not `as C`: the statsmodels formulas below use patsy's C()
-from lib.cohorts import RECOVERY_MIN, score_cohort
+from lib.cohorts import (GPL570_ADJUST, GPL6480_ADJUST, RECOVERY_MIN, AdjustedLogitZ,
+                         load_clinical, resolve_cohort, score_cohort, zscore)
 from lib.report import banner, write_and_report, write_report
+from lib.stats import bh_q, confirmatory_mask
 from lib import signatures
+from lib.signatures import rank_matrix
 
 FEATURES = ["CBC", "CellCycle", "DTP", "Fetal", "MYC", "RSC", "ModelDerived"]
-GPL570_ADJUST = "+ purity + C(cms) + C(msi_ntp) + C(study)"
-GPL6480_ADJUST = "+ C(cms) + C(msi_ntp)"
-
-
-def zscore(s):
-    return (s - s.mean()) / s.std(ddof=0)
+N_NULL_DRAWS = 1000
 
 
 def fit_logit(df, formula, label):
@@ -66,6 +69,32 @@ def run_cohort_tests(rank_df, cov_df, feature, adjust_formula_extra, cohort_tag)
     return unadj, adj
 
 
+def random_signature_null(ranks, cov_df, gene_sets, adjust_formula_extra, rng,
+                          n_draws=N_NULL_DRAWS):
+    """
+    (z_observed, p_random_null, n_valid) for one adjusted test.
+
+    `gene_sets` is the feature's resolved genes: one list, or [up, down] for
+    DTP, which is scored up minus down. Each draw replaces them with random
+    genes from the same cohort, of the same sizes, scores them with the same
+    background_score, and refits the same adjusted logit on the same rows
+    (lib.cohorts.AdjustedLogitZ, so a draw costs one fit). p_random_null is
+    the share of draws whose Wald |z| is at least the observed one; draws
+    that fail to converge are dropped.
+    """
+    wald_z = AdjustedLogitZ(ranks, cov_df, adjust_formula_extra)
+    z_obs = wald_z(gene_sets)
+    genes = ranks.columns.to_numpy()
+    sizes = [len(g) for g in gene_sets]
+    null = np.empty(n_draws)
+    for i in range(n_draws):
+        draw = list(rng.choice(genes, sum(sizes), replace=False))
+        sets = [draw[:sizes[0]], draw[sizes[0]:]] if len(sizes) == 2 else [draw]
+        null[i] = wald_z(sets)
+    null = null[np.isfinite(null)]
+    return z_obs, (1 + (np.abs(null) >= abs(z_obs)).sum()) / (1 + len(null)), len(null)
+
+
 def pca_2d(expr_genes_by_samples, top_n=2000):
     v = expr_genes_by_samples.var(axis=1).sort_values(ascending=False)
     top = expr_genes_by_samples.loc[v.index[:top_n]]
@@ -89,16 +118,13 @@ def fmt_row(r):
 def main():
     banner("LOADING R-SIDE OUTPUTS (stages/prep/clinical_prep.R)")
 
-    for f in ["clinical_expr_gpl570_combat.csv", "clinical_expr_gpl570_precombat.csv",
-              "clinical_expr_gse104645.csv", "clinical_covariates.csv"]:
-        if not (config.PROCESSED / f).exists():
-            print(f"  !! {config.PROCESSED / f} missing. Run stages/prep/clinical_prep.R first. Stopping.")
-            sys.exit(1)
-
-    expr570_post = pd.read_csv(config.PROCESSED / "clinical_expr_gpl570_combat.csv", index_col="gene")
-    expr570_pre = pd.read_csv(config.PROCESSED / "clinical_expr_gpl570_precombat.csv", index_col="gene")
-    expr6480 = pd.read_csv(config.PROCESSED / "clinical_expr_gse104645.csv", index_col="gene")
-    cov = pd.read_csv(config.PROCESSED / "clinical_covariates.csv", index_col="sample_id")
+    tables = load_clinical()
+    if tables is None:
+        print(f"  !! clinical inputs missing from {config.PROCESSED}. "
+              "Run stages/prep/clinical_prep.R first. Stopping.")
+        sys.exit(1)
+    expr570_post, expr570_pre = tables["gpl570"], tables["gpl570_precombat"]
+    expr6480, cov = tables["gpl6480"], tables["covariates"]
 
     cov570 = cov[cov.platform == "GPL570"].copy()
     cov6480 = cov[cov.platform == "GPL6480"].copy()
@@ -151,6 +177,29 @@ def main():
                 results.append(row)
 
     results_df = pd.DataFrame(results)
+
+    banner("SIZE-MATCHED RANDOM-SIGNATURE NULL (adjusted models)")
+    rng = np.random.default_rng(config.SEED)
+    null = {}
+    print(f"  {N_NULL_DRAWS} random gene sets per test, sizes matched to each resolved signature")
+    for cohort, expr, cov_c, extra in [("GPL570", expr570_post, cov570, GPL570_ADJUST),
+                                       ("GPL6480", expr6480, cov6480, GPL6480_ADJUST)]:
+        expr_r, sigs, _ = resolve_cohort(expr.T, alias_map, verbose=False)
+        ranks = rank_matrix(expr_r)
+        for feat in FEATURES:
+            sets = [sigs["DTP_up"], sigs["DTP_down"]] if feat == "DTP" else [sigs[feat]]
+            z, p_null, n_ok = random_signature_null(ranks, cov_c, sets, extra, rng)
+            null[(cohort, feat)] = (p_null, n_ok)
+            print(f"  {cohort:<8} {feat:<13} z={z:+.2f}  p_random_null={p_null:.3f}  "
+                  f"({n_ok} draws converged)")
+    adj_ok = (results_df.model == "adjusted") & (results_df.status == "ok")
+    results_df["p_random_null"] = [null[(c, f)][0] if ok else np.nan for c, f, ok in
+                                   zip(results_df.cohort, results_df.feature, adj_ok)]
+    results_df["n_random_null"] = [null[(c, f)][1] if ok else np.nan for c, f, ok in
+                                   zip(results_df.cohort, results_df.feature, adj_ok)]
+    # One BH family per cohort and model (unadjusted / adjusted): the features.
+    results_df["q"] = results_df.groupby(["cohort", "model"])["p"].transform(bh_q)
+    results_df["confirmatory"] = confirmatory_mask(results_df, "clinical_validation")
     print(results_df.to_string(index=False))
 
     banner("BATCH-STRUCTURE PCA (GPL570, before vs after ComBat)")

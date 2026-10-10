@@ -26,11 +26,12 @@ import pandas as pd
 import streamlit as st
 
 import config as C
+from lib.io import load_ceiling
 
 DATA = C.DASHBOARD_DIR
 PROC = C.PROCESSED
 MODULES = C.ALL_MODULES
-CEILING = C.CEILING_R[C.TARGET]
+CEILING = load_ceiling()
 
 st.set_page_config(page_title="5-FU resistance", layout="wide")
 
@@ -206,9 +207,10 @@ with tab4:
                  hide_index=True, use_container_width=True)
 
     st.caption(
-        "Confidence intervals are roughly ±0.07. Most differences between rows "
-        "are inside that, so point estimates should not be compared as though "
-        "small gaps were real."
+        "Confidence intervals resample cell lines and are roughly ±0.07. Most "
+        "differences between rows are inside that. Tested directly, the "
+        "transcriptome beats lineage + proliferation and the modules model; the "
+        "modules model does not beat lineage + proliferation."
     )
 
     st.subheader("The DTP hypothesis, every test run")

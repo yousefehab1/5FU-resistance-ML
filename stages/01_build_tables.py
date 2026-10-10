@@ -16,6 +16,7 @@ OUTPUTS  data/processed/X_{GDSC1,GDSC2}.parquet
          data/processed/expression_tpm.parquet   (cache; delete to rebuild)
          data/processed/signature_scores_{GDSC1,GDSC2}.parquet
          data/processed/signature_scores_ssgsea_{GDSC1,GDSC2}.parquet
+         data/processed/screen_agreement.csv   (the noise ceiling, see below)
 """
 
 import sys
@@ -25,12 +26,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import pandas as pd
-from scipy import stats
 
 import config as C
 from lib.io import load_expression_cached, load_screen
-from lib.report import banner
+from lib.report import banner, write_and_report
 from lib.signatures import load_alias_map, load_signatures, score_all
+from lib.stats import screen_agreement
 
 DRUG_SEARCH = "fluorouracil"
 
@@ -43,20 +44,28 @@ def find_drug_rows(df, label):
     return hits
 
 
-def report_gdsc_agreement(fu1, fu2):
+def write_screen_agreement(ys):
     """
-    Pearson r between GDSC1 and GDSC2 LN_IC50 on shared cell lines: two
-    independent screens of the same drug on the same lines. However well
-    they agree with EACH OTHER is roughly the ceiling on how well any model
-    could predict sensitivity from expression -- see config.CEILING_R.
+    The noise ceiling: GDSC1 vs GDSC2 for 5-FU on the lines both screens
+    measured, restricted to the cohort the models are fitted on (solid
+    lineages, with expression). Two independent screens of the same drug on
+    the same lines agree only this well, so no model predicting one of them
+    from expression can be expected to do better. Written to
+    screen_agreement.csv and read back by lib.io.load_ceiling(); every
+    pct_of_ceiling in the project is a fraction of this.
     """
-    a = fu1.groupby("SANGER_MODEL_ID")["LN_IC50"].mean()
-    b = fu2.groupby("SANGER_MODEL_ID")["LN_IC50"].mean()
-    both = pd.concat([a, b], axis=1, join="inner", keys=["GDSC1", "GDSC2"]).dropna()
-    r, p = stats.pearsonr(both["GDSC1"], both["GDSC2"])
-    print(f"  GDSC1 vs GDSC2 LN_IC50, {len(both):,} shared lines: r={r:.3f} (p={p:.2e})")
-    print(f"  (config.CEILING_R['LN_IC50']={C.CEILING_R['LN_IC50']} -- judge every "
-          f"model result as a fraction of this, not of 1.0)")
+    a, b = ys[C.TRAIN], ys[C.TEST]
+    solid = (set(a.index[~a[C.LINEAGE_COL].isin(C.HAEM)])
+             & set(b.index[~b[C.LINEAGE_COL].isin(C.HAEM)]))
+    rows = []
+    for target in ["AUC", "LN_IC50"]:
+        res = screen_agreement(a[target], b[target], lines=solid)
+        print(f"  {C.TRAIN} vs {C.TEST} {target:<7} n={res['n']:,} solid lines with "
+              f"expression: r={res['r']:.3f}  rho={res['rho']:.3f}")
+        rows.append(dict(drug=C.FU_DRUG_NAME, target=target,
+                         line_set="solid, with expression, in both screens", **res))
+    print("  judge every model r as a fraction of this, not of 1.0")
+    write_and_report(pd.DataFrame(rows), C.PROCESSED / "screen_agreement.csv")
 
 
 def build_modelling_table():
@@ -64,7 +73,6 @@ def build_modelling_table():
     g1 = pd.read_csv(C.GDSC1_FILE, low_memory=False)
     g2 = pd.read_csv(C.GDSC2_FILE, low_memory=False)
     fu1, fu2 = find_drug_rows(g1, "GDSC1"), find_drug_rows(g2, "GDSC2")
-    report_gdsc_agreement(fu1, fu2)
 
     banner("2. WHICH CELL LINES DO WE NEED?")
     needed_ids = set(fu1["SANGER_MODEL_ID"]) | set(fu2["SANGER_MODEL_ID"])
@@ -86,6 +94,7 @@ def build_modelling_table():
 
     banner("5. JOINING")
     C.PROCESSED.mkdir(parents=True, exist_ok=True)
+    ys = {}
     for label, fu in [("GDSC1", fu1), ("GDSC2", fu2)]:
         f = fu.drop_duplicates("SANGER_MODEL_ID").set_index("SANGER_MODEL_ID")
         shared = sorted(set(f.index) & set(expr.index))
@@ -108,6 +117,10 @@ def build_modelling_table():
         X.to_parquet(C.PROCESSED / f"X_{label}.parquet")
         y.to_parquet(C.PROCESSED / f"y_{label}.parquet")
         print(f"    wrote X_{label}.parquet {X.shape}  y_{label}.parquet {y.shape}")
+        ys[label] = y
+
+    banner("6. NOISE CEILING (GDSC1 vs GDSC2, modelling cohort)")
+    write_screen_agreement(ys)
 
 
 def score_signatures():

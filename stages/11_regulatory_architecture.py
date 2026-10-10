@@ -3,12 +3,23 @@
 Counts TCGA COAD ATAC peaks near each gene and compares each signature with
 matched random gene sets.
 
-Inputs:  data/raw/atac/ (COAD peak calls, peak-to-gene links, gene_tss_hg38.csv)
+Then splits DTP_up two ways (post hoc): distal-rich vs promoter-dominant
+chromatin, and genes shared with RSC, Fetal or CBC vs DTP-only. Each half is
+scored as half minus DTP_down and read out in COREAD 5-FU AUC (both screens),
+the HCT116 induction trend and the adjusted GPL570 response model. The
+difference between halves is judged against random splits of the same sizes.
+
+Inputs:  data/raw/atac/ (COAD peak calls, peak-to-gene links, gene_tss_hg38.csv);
+         the GDSC tables, the HCT116 time-course and, when present, the
+         clinical cohorts of stages/prep/clinical_prep.R (for the split test)
 Outputs: data/processed/coad_gene_regulatory_architecture.csv,
-         regulatory_permutation_results.csv, reports/regulatory_architecture.md
+         regulatory_permutation_results.csv, dtp_subprogramme_results.csv,
+         reports/regulatory_architecture.md
 Run:     python stages/11_regulatory_architecture.py
 """
 
+import contextlib
+import io
 from pathlib import Path
 import sys
 import warnings
@@ -23,8 +34,11 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config as C
-from lib.cohorts import load_model_derived_genes
+from lib.cohorts import (GPL570_ADJUST, AdjustedLogitZ, load_clinical,
+                         load_model_derived_genes, resolve_cohort)
 from lib.io import solid_screen
+from lib.stats import bh_q
+from lib.timecourse import hours, load_counts
 from lib.report import banner, write_and_report, write_report
 from lib import signatures as S
 
@@ -33,6 +47,9 @@ N_EXPR_BINS = 5
 N_LEN_BINS = 5
 PEAK_CATEGORIES = ["Distal", "Promoter"]
 SIGNATURE_SETS = ["DTP_up", "DTP_down", "RSC", "CBC", "Fetal", "CellCycle", "MYC"]
+DISTAL_RICH_MIN = 0.5      # distal_fraction at or above this is distal-rich
+SHARED_WITH = ["RSC", "Fetal", "CBC"]
+N_SPLIT_NULL = 1000
 
 
 # -----------------------------------------------------------------------
@@ -228,7 +245,7 @@ def b2_b3_permutation_tests(arch_df, tss, expr_mean, model_genes):
     sigs = S.load_signatures(set(universe.index) | set(model_genes), alias_map, verbose=True)
 
     gene_sets = {name: sigs[name] for name in SIGNATURE_SETS if name in sigs}
-    gene_sets["model_413"] = model_genes
+    gene_sets["model_genes"] = model_genes
 
     rows = []
     rng = np.random.default_rng(C.SEED)
@@ -245,6 +262,119 @@ def b2_b3_permutation_tests(arch_df, tss, expr_mean, model_genes):
             res_df.loc[sub.index, "q"] = false_discovery_control(sub["p"].to_numpy())
     write_and_report(res_df, C.PROCESSED / "regulatory_permutation_results.csv")
     return res_df, len(universe)
+
+
+# -----------------------------------------------------------------------
+# DTP sub-programmes (post hoc)
+# -----------------------------------------------------------------------
+
+def subprogramme_splits(arch_df, alias_map):
+    """
+    {split: (pool, half_a)} on canonical HGNC symbols. The pool is the DTP_up
+    genes the split can classify; half_b is the rest of the pool. Defined
+    once here, then mapped into each dataset's own resolved names, so every
+    readout splits the same genes.
+    """
+    canon = lambda g: alias_map.get(g, g)
+    every = set(alias_map) | set(alias_map.values())
+    with contextlib.redirect_stdout(io.StringIO()):
+        raw = S.load_signatures(every, alias_map, verbose=False)
+    up = {canon(g) for g in raw["DTP_up"]}
+    others = {canon(g) for name in SHARED_WITH for g in raw[name]}
+
+    frac = {}
+    for g, f in zip(arch_df.gene, arch_df.distal_fraction):
+        frac.setdefault(canon(g), f)
+    with_arch = {g for g in up if g in frac}
+    return {"chromatin": (with_arch, {g for g in with_arch if frac[g] >= DISTAL_RICH_MIN}),
+            "sharing": (up, up & others)}
+
+
+def subprogramme_readouts(alias_map):
+    """
+    [(name, statistic, resolved DTP_up, f)]: f(up_genes) scores up_genes
+    minus DTP_down in one dataset and returns the readout. The whole DTP_up
+    through f reproduces the published DTP result of each readout.
+    """
+    out = []
+    for label in [C.TRAIN, C.TEST]:
+        X, y, _ = solid_screen(label)
+        crc = (y[C.LINEAGE_COL] == C.CRC).to_numpy()
+        ranks = S.rank_matrix(X.loc[crc])   # within-line ranks: other rows change nothing
+        sigs = S.load_signatures(X.columns, alias_map, verbose=False)
+        down = S.background_score(ranks, sigs["DTP_down"])
+        auc = y[C.TARGET].to_numpy()[crc]
+        out.append((f"{label} COREAD 5-FU AUC", "Pearson r", sigs["DTP_up"],
+                    lambda g, r=ranks, d=down, a=auc:
+                        np.corrcoef(S.background_score(r, g) - d, a)[0, 1]))
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        expr = load_counts()
+    ranks = S.rank_matrix(expr)
+    sigs = S.load_signatures(expr.columns, alias_map, verbose=False)
+    down, t = S.background_score(ranks, sigs["DTP_down"]), hours(expr.index)
+    out.append(("HCT116 5-FU time-course", "trend r", sigs["DTP_up"],
+                lambda g: np.corrcoef(S.background_score(ranks, g) - down, t)[0, 1]))
+
+    tables = load_clinical()
+    if tables is None:
+        print("  NOTE: clinical cohorts missing (stages/prep/clinical_prep.R); "
+              "GPL570 readout skipped")
+        return out
+    cov = tables["covariates"]
+    expr_r, csigs, _ = resolve_cohort(tables["gpl570"].T, alias_map, verbose=False)
+    wald_z = AdjustedLogitZ(S.rank_matrix(expr_r), cov[cov.platform == "GPL570"], GPL570_ADJUST)
+    out.append(("GPL570 FOLFOX response, adjusted", "Wald z", csigs["DTP_up"],
+                lambda g: wald_z([g, csigs["DTP_down"]])))
+    return out
+
+
+def dtp_subprogrammes(arch_df):
+    """
+    Does one part of DTP_up carry its associations? For each split and
+    readout: the statistic of each half, their difference, and the share of
+    N_SPLIT_NULL random splits of the same pool, at the same sizes, whose
+    absolute difference is at least as large.
+    """
+    banner(f"DTP SUB-PROGRAMMES (post hoc; {N_SPLIT_NULL} random splits per test)")
+    alias_map = S.load_alias_map(required=False)
+    splits = subprogramme_splits(arch_df, alias_map)
+    names = {"chromatin": (f"distal-rich (distal_fraction >= {DISTAL_RICH_MIN})",
+                           "promoter-dominant"),
+             "sharing": (f"shared with {'/'.join(SHARED_WITH)}", "DTP-only")}
+    for split, (pool, a) in splits.items():
+        print(f"  {split}: {len(a)} {names[split][0]} vs {len(pool) - len(a)} "
+              f"{names[split][1]} (canonical DTP_up genes)")
+
+    rng = np.random.default_rng(C.SEED)
+    rows = []
+    for readout, statistic, up, f in subprogramme_readouts(alias_map):
+        whole = f(up)
+        print(f"\n  -- {readout} ({statistic}); whole DTP {whole:+.3f}")
+        for split, (pool_c, a_c) in splits.items():
+            pool = np.array([g for g in up if alias_map.get(g, g) in pool_c])
+            in_a = np.array([alias_map.get(g, g) in a_c for g in pool])
+            sa, sb = f(list(pool[in_a])), f(list(pool[~in_a]))
+            null = np.empty(N_SPLIT_NULL)
+            for i in range(N_SPLIT_NULL):
+                perm = rng.permutation(pool)
+                null[i] = f(list(perm[:in_a.sum()])) - f(list(perm[in_a.sum():]))
+            null = null[np.isfinite(null)]
+            p = (1 + (np.abs(null) >= abs(sa - sb)).sum()) / (1 + len(null))
+            rows.append(dict(split=split, readout=readout, statistic=statistic,
+                             subset_a=names[split][0], n_a=int(in_a.sum()), stat_a=sa,
+                             subset_b=names[split][1], n_b=int((~in_a).sum()), stat_b=sb,
+                             diff=sa - sb, stat_whole=whole, n_null=len(null),
+                             p_split_null=p))
+            print(f"     {split:<10} {names[split][0][:24]:<24} {sa:+.3f} (n={in_a.sum()})   "
+                  f"{names[split][1]:<18} {sb:+.3f} (n={(~in_a).sum()})   "
+                  f"diff {sa - sb:+.3f}  p_split_null={p:.3f}")
+
+    out = pd.DataFrame(rows)
+    out["q"] = bh_q(out["p_split_null"])
+    out["declared"] = "post hoc"
+    write_and_report(out, C.PROCESSED / "dtp_subprogramme_results.csv")
+    return out
 
 
 # -----------------------------------------------------------------------
@@ -402,6 +532,7 @@ def main():
     print(f"  final model genes: {len(model_genes)}")
 
     res_df, n_universe = b2_b3_permutation_tests(counts, tss, expr_mean, model_genes)
+    dtp_subprogrammes(counts)
 
     banner("WRITING DOC")
     write_doc(counts, n_linked, n_total_peaks, n_agree, res_df, n_universe)

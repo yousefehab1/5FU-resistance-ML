@@ -29,11 +29,11 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config as C
 from lib.io import load_expression
-from lib.modeling import (deconfounded_gene_fit, elasticnet_pipeline,
-                          cv_repeats, ridge_cv_predict, summarise)
+from lib.modeling import (cv_oof, deconfounded_gene_fit, elasticnet_pipeline,
+                          per_repeat, ridge_cv_predict, summarise)
 from lib.report import banner, write_and_report, write_report
 from lib import signatures as S
-from lib.stats import hypergeometric_overlap
+from lib.stats import hypergeometric_overlap, screen_agreement
 
 SCREENS = {"GDSC1": C.GDSC1_FILE, "GDSC2": C.GDSC2_FILE}
 
@@ -177,6 +177,11 @@ def build_targets():
             qc_rows.append(qc)
 
     banner("TARGETS 4. MEASUREMENT CEILING (GDSC1 vs GDSC2 on shared lines, AUC)")
+    # The same line set as the 5-FU ceiling in stage 01: solid (the tables
+    # above already exclude haem lineages), with expression, in both screens.
+    with_expr = set()
+    for lbl in [C.TRAIN, C.TEST]:
+        with_expr |= set(pd.read_parquet(C.PROCESSED / f"X_{lbl}.parquet", columns=[]).index)
     ceilings = {}
     for drug in C.DRUGS:
         a, b = tables.get((drug, "GDSC1")), tables.get((drug, "GDSC2"))
@@ -184,14 +189,14 @@ def build_targets():
             ceilings[drug] = None
             print(f"  {drug:16} not computable (screened in one arm only)")
             continue
-        both = pd.concat([a.AUC, b.AUC], axis=1, keys=[C.TRAIN, C.TEST]).dropna()
-        if len(both) < 10:
+        agree = screen_agreement(a.AUC, b.AUC, lines=with_expr)
+        if not np.isfinite(agree["r"]):
             ceilings[drug] = None
-            print(f"  {drug:16} not computable (only {len(both)} shared lines)")
+            print(f"  {drug:16} not computable (only {agree['n']} shared lines)")
             continue
-        r, p = stats.pearsonr(both.GDSC1, both.GDSC2)
-        ceilings[drug] = r
-        print(f"  {drug:16} r={r:.3f}  (n={len(both):,} shared lines, p={p:.1e})")
+        ceilings[drug] = agree["r"]
+        print(f"  {drug:16} r={agree['r']:.3f}  (n={agree['n']:,} shared lines, "
+              f"p={agree['p']:.1e})")
 
     banner("TARGETS 5. SCREEN CHOICE PER DRUG (dynamic range = AUC SD)")
     chosen = {}
@@ -262,12 +267,12 @@ def build_targets():
     lines.append("")
     fu_r = ceilings.get("5-Fluorouracil")
     fu_r_str = f"{fu_r:.3f}" if fu_r is not None else "n/a"
-    lines.append(f"5-FU's own ceiling here (r={fu_r_str}, solid tumours only) "
-                  "is lower than the pan-cancer r=0.604 (n=902 shared lines including "
-                  "haem lineages). Both are legitimate: 0.604 is the whole-panel number; "
-                  "the value here restricts to the solid cohort this project models on. "
-                  "Do not treat the gap as an error, and do not substitute "
-                  "either number for another drug's ceiling.\n")
+    lines.append(f"Every ceiling here, 5-FU's included (r={fu_r_str}), is computed on "
+                  "the solid lines with expression that both screens measured, the same "
+                  "line set as the 5-FU model's ceiling in `screen_agreement.csv` "
+                  "(stage 01). This stage averages a drug's DRUG_IDs per line, so its "
+                  "5-FU value can differ slightly from stage 01's. Do not substitute "
+                  "one drug's ceiling for another's.\n")
 
     lines.append("## AUC distribution and extrapolation, per drug x screen\n")
     lines.append("| Drug | Screen | n | AUC mean | AUC sd | % extrapolated | "
@@ -320,16 +325,16 @@ def build_targets():
 def report_cv(X, y, lineage, deconfound, name, res, drug, screen, n):
     """The shared repeated CV, reported this script's way.
 
-    Numerics come from lib.modeling.cv_repeats; only the presentation is
-    local: a wider name column, no standard deviation in the printed line,
-    and a result row carrying drug, screen and n.
+    Numerics come from lib.modeling.cv_oof and summarise; only the
+    presentation is local: a wider name column, no standard deviation in the
+    printed line, and a result row carrying drug, screen and n. Returns the
+    per-repeat r.
     """
-    rs = cv_repeats(X, y, lineage, deconfound)
-    mean, lo, hi, sd = summarise(rs)
-    print(f"  {name:<48} r={mean:.3f}  [{lo:.3f}, {hi:.3f}]")
-    res.append(dict(drug=drug, screen=screen, model=name, n=n,
-                    r_mean=mean, r_lo=lo, r_hi=hi, r_sd=sd))
-    return rs
+    o = cv_oof(X, y, lineage, deconfound)
+    row = summarise(o, name)
+    print(f"  {name:<48} r={row['r_mean']:.3f}  [{row['r_lo']:.3f}, {row['r_hi']:.3f}]")
+    res.append(dict(drug=drug, screen=screen, n=n, **row))
+    return per_repeat(o)
 
 
 def evaluate_baseline(name, y_true, y_pred, res, drug, screen, n):

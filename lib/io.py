@@ -152,3 +152,22 @@ def load_mutation_flags(genes, model_ids=None):
     if model_ids is not None:
         flags = flags.reindex(model_ids).fillna(0)
     return flags
+
+
+def load_ceiling(target=C.TARGET, drug=C.FU_DRUG_NAME):
+    """
+    The noise ceiling for `drug` and `target`: GDSC1 vs GDSC2 Pearson r on the
+    solid, expression-matched lines both screens measured, as stage 01 wrote it
+    to screen_agreement.csv. Judge every model r as a fraction of this, not
+    of 1.0.
+    """
+    path = C.PROCESSED / "screen_agreement.csv"
+    if not path.exists():
+        print(f"  !! {path.name} missing: run stages/01_build_tables.py first.")
+        sys.exit(1)
+    df = pd.read_csv(path)
+    row = df[(df["drug"] == drug) & (df["target"] == target)]
+    if row.empty or not pd.notna(row["r"].iloc[0]):
+        print(f"  !! no screen agreement for {drug} / {target} in {path.name}.")
+        sys.exit(1)
+    return float(row["r"].iloc[0])

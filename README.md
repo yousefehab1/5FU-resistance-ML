@@ -41,20 +41,20 @@ Stage 05 (five drugs through repeated CV) is the slowest stage.
 | Stage | What it does |
 |---|---|
 | **5-FU model** | |
-| `01_build_tables` | 5-FU rows from both screens + expression, as `X_/y_GDSC{1,2}.parquet`; rank-based signature scores |
-| `02_fu_model` | Baselines; ElasticNet with 5×5 repeated CV, lineage de-confounding and CRC transfer; gene enrichment; affine recalibration to GDSC2 (a display fix) |
-| `03_fu_confounds` | Driver mutations, DTP adjusted for MSI and TP53; general chemosensitivity, drug similarity, TYMS/pathway check |
+| `01_build_tables` | 5-FU rows from both screens + expression, as `X_/y_GDSC{1,2}.parquet`; rank-based signature scores; the GDSC1/GDSC2 noise ceiling (`screen_agreement.csv`) |
+| `02_fu_model` | Baselines; ElasticNet with 5×5 repeated CV, lineage de-confounding, whole lineages held out and CRC transfer; corrected t-tests between models; gene enrichment with signed tests; affine recalibration to GDSC2 (a display fix) |
+| `03_fu_confounds` | Driver mutations, DTP adjusted for MSI and TP53; does MSI modify the DTP association; DTP vs mismatch-repair expression and burden; general chemosensitivity, drug similarity, TYMS/pathway check; why the modules model differed between screens; fixed vs tuned alpha across target scales |
 | `04_armB_induction` | HCT116 time-course: trend tests + compositional null |
 | **Other drugs** | |
 | `05_multidrug` | Targets and QC for oxaliplatin, SN-38, irinotecan, cisplatin; the 5-FU pipeline per drug, with gene enrichment |
 | `06_drug_specificity` | Is DTP specific to 5-FU? Gene overlap; ribosome-biogenesis test |
 | **Patients** | |
-| `07_clinical_validation` | Logistic regression of response on each score |
+| `07_clinical_validation` | Logistic regression of response on each score, against random gene sets of the same size |
 | **Epigenome** | |
 | `08_methylation` | Promoter and gene-body methylation matrices; MSI adjustment redone with continuous MLH1 methylation; methylation-only and late-fusion models |
 | `09_methylation_context` | DTP methylation vs response per CpG context |
 | `10_tf_activity` | TF activity (decoupler, CollecTRI) vs DTP and response |
-| `11_regulatory_architecture` | Are DTP genes enhancer-rich in colon tumour chromatin? |
+| `11_regulatory_architecture` | Are DTP genes enhancer-rich in colon tumour chromatin? Does a chromatin or shared-module subset of DTP_up carry its associations? |
 | **Output** | |
 | `12_dashboard_data` | Compact tables for `app.py`; runs last |
 

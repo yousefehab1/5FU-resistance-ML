@@ -23,11 +23,15 @@ which would inflate apparent performance for the wrong reason.
 **AUC**, not LN_IC50. GDSC's IC50 is right-censored (many solid lines are
 never killed at screenable concentrations), which makes IC50 both
 noisier and harder to interpret. AUC degrades more gracefully under
-censoring. `config.CEILING_R = {"AUC": 0.604, "LN_IC50": 0.560}` records
-how well GDSC1 and GDSC2 agree with each other on the same lines for each
-target: the ceiling on what any model predicting one screen from
-baseline expression could achieve, since that agreement bounds the
-achievable correlation regardless of modelling quality.
+censoring. Stage 01 computes how well GDSC1 and GDSC2 agree with each
+other on the same lines (`lib.stats.screen_agreement`), on the cohort
+the models are fitted on: solid lineages, with expression, measured in
+both screens (n=781). It writes Pearson and Spearman for AUC and LN_IC50
+to `screen_agreement.csv`, and `lib.io.load_ceiling()` reads it back.
+That agreement is the ceiling on what any model predicting one screen
+from baseline expression could achieve, and every `pct_of_ceiling` is
+a fraction of it. Stage 05 computes each other drug's ceiling on the
+same line set.
 
 ## Features
 
@@ -41,14 +45,74 @@ so it cannot leak test information (`lib/io.py::load_screen`).
 
 ## Model
 
-`SelectKBest(f_regression, k=1500) → StandardScaler → ElasticNet(alpha=0.02,
-l1_ratio=0.5)` (`lib/modeling.py::elasticnet_pipeline`), evaluated by 5×5
-repeated K-fold CV (`repeated_cv`): 5 folds, 5 repeats with different
-random splits, reporting the mean and 95% CI (2.5th/97.5th percentile)
-across the 5 per-repeat Pearson r values. `SelectKBest` lives **inside**
-the pipeline rather than as a pre-filtering step, so gene selection is
-refit on the training fold only every time; selecting by correlation
-with the full target before splitting would leak.
+`SelectKBest(f_regression, k=1500) → StandardScaler → ElasticNet(l1_ratio=0.5)`
+(`lib/modeling.py::elasticnet_pipeline`), evaluated by 5×5 repeated
+K-fold CV (`repeated_cv`): 5 folds, 5 repeats with different random
+splits. `SelectKBest` lives **inside** the pipeline rather than as a
+pre-filtering step, so gene selection is refit on the training fold only
+every time; selecting by correlation with the full target before
+splitting would leak.
+
+**Nested tuning.** Alpha is chosen inside every outer training fold by a
+3-fold inner CV on that fold's rows only (`TunedElasticNet`, which wraps
+`ElasticNetCV`), so every reported r is still an outer-CV estimate. The
+grid depends on the table's width: tables wider than
+`config.FEW_FEATURES` (50) columns search `config.ELASTICNET_ALPHAS`,
+0.002 to 0.5 in 13 log steps; narrower ones (the four-module models)
+search `config.ELASTICNET_ALPHAS_FEW`, 1e-5 to 0.5 in 22 steps. The
+gene-level floor is a run-time compromise: below 0.002 the coordinate
+descent on 1,500 genes slows sharply, and no gene-level fit chose the
+floor. `l1_ratio` stays at 0.5; tuning it over {0.2, 0.5, 0.9} made
+each fit about ten times slower and did not raise out-of-fold r on
+GDSC1 5-FU. Ridge
+models (B4 and the module baselines) use `RidgeCV` over
+`config.RIDGE_ALPHAS` (0.01 to 1000) the same way.
+
+Every row records the median chosen alpha (`alpha_median`) and the
+fraction of folds whose choice sat on a grid edge (`alpha_edge_frac`).
+Two edges are hit, and neither changes a conclusion. The four-feature
+modules models pick the floor 1e-5 in 20% (GDSC1 raw) to about half
+(GDSC2) of folds: with four features that is ordinary least squares, so
+a lower floor cannot change the fit.
+The CRC-only Ridge models (43 lines) pick 100 to 1000 in 12 to 44% of
+folds: the inner CV finds nothing to fit and shrinks towards a constant.
+
+The previous fixed penalty (`config.ELASTICNET_PARAMS`, alpha=0.02) is
+kept as a reference: stage 02 refits the transcriptome models with it on
+the same splits (`fixed_elasticnet_pipeline`), and `model_comparisons.csv`
+tests tuned against fixed with the corrected t-test.
+
+`lib.modeling.cv_oof` keeps every out-of-fold prediction, and each
+result row reports:
+
+- `r_mean`, `r_sd`: Pearson r per repeat, then mean and SD over repeats.
+- `r_lo`, `r_hi`: 2.5th and 97.5th percentiles of a cell-line bootstrap
+  (`lib.stats.bootstrap_lines_r`, 2,000 draws). Each draw resamples lines
+  and rescores every repeat on them. The predictions are held fixed, so
+  the interval reflects which lines were screened, not training noise.
+  It replaces a percentile over the 5 per-repeat r values, which is close
+  to their minimum and maximum and says nothing about the lines.
+- `rho_mean`: Spearman rho, mean over repeats.
+- `cindex_mean`: Harrell's C (`lib.stats.concordance_index`), the share of
+  line pairs the prediction orders correctly, mean over repeats.
+
+**Model comparisons** (`model_comparisons.csv`). Two models scored on the
+same lines and splits are compared on their per-split r differences (25
+splits) with the corrected resampled t-test of Nadeau and Bengio (2003):
+splits of repeated CV share training lines, so the variance is inflated
+by (1/J + n_test/n_train), with J-1 degrees of freedom. The pairs are the
+transcriptome and modules models against the B4 bar (lineage +
+proliferation, a Ridge refit on the same solid lines and splits), and the
+transcriptome against the modules model, raw and de-confounded. q is BH
+across the four.
+
+**Leave whole lineages out** (`cv_leave_lineage_out`). Fold-internal
+de-confounding still trains on every tissue it tests on. Here each
+lineage is predicted by a model fitted on every other lineage. Two lines
+with no lineage label form one group. The rows report the pooled r over
+all lines (which still rewards predicting a new tissue's average) and
+the median within-lineage r over held-out lineages with at least
+`MIN_LINEAGE_N` lines (which does not).
 
 ## Lineage de-confounding
 
@@ -60,7 +124,8 @@ training rows are dropped: their mean can't be estimated without seeing
 them. This is the most safety-critical piece of code in the project:
 computing lineage means over the **whole dataset** uses test-fold targets
 and reports a leaked r=0.279 for the de-confounded association, against
-r=0.182 for the fold-internal version. That gap is the size of the leak.
+r=0.182 for the fold-internal version (both at the fixed alpha=0.02).
+That gap is the size of the leak.
 `tests/test_library.py` has a synthetic regression guard against this
 failure mode: on data that is pure lineage-encoded noise (y is
 literally the lineage mean plus noise, X is independent random noise),
@@ -118,12 +183,35 @@ reported as sensitivity checks, never modelled as if independent.
 
 ## Enrichment
 
-`lib/stats.py::hypergeometric_enrichment` tests whether the ~413
-non-zero-coefficient genes from the final de-confounded model's full fit
+`lib/stats.py::hypergeometric_enrichment` tests whether the non-zero-coefficient
+genes from the final de-confounded model's full fit (156 since nested tuning)
 are enriched for each curated signature, against the universe of every
 gene the model could have selected from (the missingness-filtered,
 haem-excluded expression matrix, not the raw unfiltered matrix and not
 just the query size). `p = scipy.stats.hypergeom.sf(k-1, N, K, n)`.
+
+The overlap test ignores direction: DTP_up genes with sensitivity-
+direction coefficients would count the same as ones with resistance-
+direction coefficients. `lib.stats.signed_set_test` adds direction on two
+vectors, positive meaning higher AUC (resistant):
+
+- `coef_*`: the model's non-zero coefficients. `coef_n_resistance` of
+  `coef_n` set genes carry positive coefficients; `coef_p_sign` is a
+  binomial test against one half, `coef_p_rank` a Mann-Whitney test of
+  the set's coefficients against the other model genes.
+- `genome_*`: every gene's correlation with the de-confounded target
+  (lineage-centred expression against within-lineage z-scored AUC, on
+  lines in lineages with at least `MIN_LINEAGE_N` lines), the preranked
+  analogue of GSEA (`lib.stats.set_shift_test`). `genome_mean_r` is the
+  set's mean correlation and `genome_background_r` the genome-wide mean
+  within each expression decile, weighted by the set's genes per decile:
+  curated genes are well expressed, and well-expressed genes carry higher
+  correlations than the genome as a whole. `genome_shift` is the
+  difference. `genome_p_perm` comes from 1,000 permutations of the target
+  within lineage, recomputing both terms each time, so correlation among
+  a set's genes is kept. A random-gene-set null would not keep it and
+  called every set significant. The test is competitive: it asks whether
+  a set tracks resistance more than similar genes do.
 
 ## Assay-resolution stratification
 
@@ -153,7 +241,77 @@ DTP and AUC on the covariate then correlating the residuals) tests
 whether DTP's association with resistance survives adjustment for
 microsatellite instability (MSI) and, separately, TP53 mutation status.
 This is a genuine confound test, not a feature the model itself uses;
-MSI/TP53 are not inputs to the ElasticNet model.
+MSI/TP53 are not inputs to the ElasticNet model. Stage 03 uses every
+COREAD line with an MSI call; stage 08 also needs methylation and so
+loses one line, and it reports the binary-MSI adjustment on both line
+sets so the two stages can be reconciled.
+
+## MSI as an effect modifier, and MMR coupling (stage 03, post hoc)
+
+Adjustment asks whether MSI explains the DTP association. Stage 03 also
+asks whether the association differs by MSI status
+(`msi_effect_modification.csv`):
+
+- DTP against AUC within MSS and within MSI COREAD lines, and the MSS
+  minus MSI difference in r (bootstrap interval of the difference,
+  Fisher z p for two independent correlations);
+- OLS `AUC ~ DTP * MSI`, with DTP z-scored so coefficients are AUC per
+  SD, in COREAD and in all solid lines with lineage fixed effects (56 and
+  57 MSI lines there, against 16 in COREAD);
+- the tuned transcriptome ElasticNet fitted on non-colorectal solid lines
+  and scored on COREAD, MSS and MSI lines separately. Fitting on 27 to 30
+  MSS lines alone was not attempted: the 43-line CRC-only model is already
+  near zero.
+
+Then DTP against mismatch repair (`dtp_mmr_coupling.csv`). The MMR score
+is the mean of the z-scored expression of `config.MMR_GENES` (MLH1, MSH2,
+MSH6, PMS2) within each analysed set; burden is log10 of
+`mutational_burden` (`config.COVARIATES_NUM`). Each of DTP vs MMR score,
+DTP vs burden and DTP vs AUC given burden is run in COREAD, COREAD MSS,
+COREAD adjusted for MSI, and all solid lines adjusted for lineage with and
+without MSI. MSI lowers MMR expression and raises burden, so only the
+within-MSS and MSI-adjusted rows can separate a coupling from MSI again.
+MMR score against MSI is the positive control.
+
+Plain correlations carry the 500-resample line bootstrap interval;
+partial correlations carry a Fisher z interval with one degree of freedom
+removed per control (`lib/stats.py::fisher_ci`). Both tables are BH
+corrected within screen and marked `declared = post hoc`. Pan-solid rows
+need an MSI call and a lineage label, and the MMR table also a burden
+value.
+
+## Multiplicity
+
+`config.CONFIRMATORY` names the tests the DTP claim rests on: DTP against
+5-FU AUC within COREAD (GDSC1, replicated in GDSC2), DTP against 5-FU
+with general chemosensitivity removed (`drug_specificity.csv`), and DTP
+in the adjusted GPL570 clinical model. This list was written down after
+these results had been seen, so it is a declared policy, not a
+pre-registration. Every other test is exploratory. Each table carries a
+Benjamini-Hochberg q (`lib.stats.bh_q`) within its own family: one
+screen in `within_crc_association.csv`, one drug and adjustment in
+`drug_specificity.csv`, one cohort and model in `clinical_validation.csv`,
+and a `confirmatory` column (`lib.stats.confirmatory_mask`). Because the
+confirmatory tests are few and small (n=43 to 189), the DTP case is
+argued from cross-screen replication of sign and effect size, with
+bootstrap CIs per screen (`same_sign`, `ci_overlap`), rather than from
+any single p.
+
+## Modules model across screens
+
+Stage 03 refits the modules model on GDSC2 with one thing changed at a
+time (responsive lines only, the lines shared with GDSC1, the target
+scaled to unit SD), applies the GDSC1 fit to GDSC2 without refitting,
+and splits every r into between- and within-lineage parts over lineages
+with at least `config.MIN_LINEAGE_N` lines
+(`module_screen_discrepancy.csv`).
+
+It then refits the transcriptome and modules models on both screens,
+raw and de-confounded, under four rules: the fixed alpha with the
+target as is, z-scored on the training rows, or z-scored then rescaled
+to the SD of GDSC1 5-FU solid AUC (the target the fixed alpha was
+chosen on), through `lib.modeling.scaled_target`; and nested tuning
+(`penalty_scale_sensitivity.csv`).
 
 ## Multidrug residualization
 
@@ -190,7 +348,7 @@ target construction as 5-FU. Stage 05 picks one screen per drug from its
 QC (`multidrug_qc.csv`): coverage, assay-ceiling fraction and GDSC1/GDSC2
 agreement where both exist. A drug below `config.MIN_N_STOP` lines stops
 the run rather than being fitted. It then runs the stage 02 pipeline,
-with the same hyperparameters and no retuning, on each drug, and tests
+with alpha tuned per fold by the same nested CV, on each drug, and tests
 each model's selected genes for signature enrichment. Stage 06 works on
 GDSC2 (the one screen with all five drugs) and asks three things: does
 DTP track each drug after removing general chemosensitivity (partial
@@ -213,6 +371,13 @@ series reports a molecular MSI test. Stage 07 scores every sample with
 `lib.cohorts.score_cohort` (the same rank-based scoring as the cell
 lines) and fits a logistic regression of response on each z-scored
 score, unadjusted and adjusted for purity, CMS, MSI and study.
+
+Random gene sets often associate with outcome in expression data, so each
+adjusted test is also compared with 1,000 random gene sets of the same
+resolved size (two sets, up and down, for DTP), drawn from that cohort's
+genes, scored with the same `background_score` and fitted with the same
+adjusted logit on the same rows. `p_random_null` is the share of random
+sets whose Wald |z| is at least the observed one.
 
 ## Methylation (the two methylation prep scripts, stages 08 and 09)
 
@@ -242,6 +407,22 @@ silently switching regulon. Stage 11 counts TCGA COAD ATAC-seq peaks
 (distal and promoter) assigned to each gene and compares each signature
 with 2,000 random gene sets matched on expression and gene length (5 × 5
 bins).
+
+Stage 11 then splits DTP_up two ways (post hoc,
+`dtp_subprogramme_results.csv`): genes with a COAD distal fraction of at
+least 0.5 against the rest of those with a peak, and genes shared with
+RSC, Fetal or CBC against the DTP-only rest. The splits are made once on
+canonical HGNC symbols and mapped into each dataset's resolved names.
+Each half is scored as half minus DTP_down and read out three ways, each
+through the code that produced the published DTP result: Pearson r with
+5-FU AUC in COREAD (both screens), the HCT116 trend r
+(`lib/timecourse.py`, shared with stage 04) and the Wald z in the
+adjusted GPL570 response model (`lib/cohorts.py::AdjustedLogitZ`, shared
+with stage 07's random-signature null). The whole DTP_up through the same
+code reproduces each published value. The p is the share of 1,000 random
+splits of the same pool, at the same sizes, whose absolute difference
+between halves is at least the observed one; the eight tests are one BH
+family. The GPL570 readout is skipped if the clinical cohorts are absent.
 
 ## Data provenance
 

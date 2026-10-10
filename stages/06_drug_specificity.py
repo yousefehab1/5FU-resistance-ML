@@ -27,8 +27,8 @@ import config as C
 from lib.io import load_expression
 from lib.modeling import elasticnet_pipeline
 from lib.report import banner, write_and_report, write_report
-from lib.stats import (bootstrap_r_difference, hypergeometric_overlap,
-                       partial_corr, residualize)
+from lib.stats import (bh_q, bootstrap_r_difference, confirmatory_mask,
+                       hypergeometric_overlap, partial_corr, residualize)
 
 
 def general_chemosensitivity(d_gdsc2, exclude_drug):
@@ -107,6 +107,10 @@ def main():
                   f"general-adj r={r_gen:+.3f}{flag}  both-adj r={r_both:+.3f}")
 
     spec_df = pd.DataFrame(spec_rows)
+    # One BH family per drug and adjustment: the modules tested for that drug.
+    for adj in ["raw", "msi_adj", "general_adj", "both_adj"]:
+        spec_df[f"q_{adj}"] = spec_df.groupby("drug")[f"p_{adj}"].transform(bh_q)
+    spec_df["confirmatory"] = confirmatory_mask(spec_df, "drug_specificity")
 
     dtp_gen = spec_df[(spec_df.module == "DTP")]
     dtp_sig = dtp_gen[dtp_gen.p_general_adj < 0.05]

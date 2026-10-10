@@ -1,0 +1,3 @@
+drug,target,line_set,n,r,p,rho
+5-Fluorouracil,AUC,"solid, with expression, in both screens",781,0.5175112217767046,1.0227168957203885e-54,0.376580497122674
+5-Fluorouracil,LN_IC50,"solid, with expression, in both screens",781,0.47441771574798997,4.4181177193160594e-45,0.43383916612906925
